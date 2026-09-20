@@ -90,7 +90,18 @@ export default function AddRelatedModal({ relationKey, parentModule, parentId, p
       } else {
         body[target.fk] = parentId;
       }
-      await api.universalCreate(module, body);
+      // Meetings are the one relation with a calendar behind them. Creating
+      // them through the generic record endpoint (api.universalCreate) would
+      // insert a plain row and stop there — no push to the user's connected
+      // Google/Microsoft calendar, no workflow fire for 'meetings' events.
+      // POST /calendar/events is the same endpoint the full Calendar page
+      // uses, so a meeting booked from a Lead/Account/Deal page behaves
+      // identically to one booked from the Calendar module itself.
+      if (relationKey === 'meetings') {
+        await api.createCalendarEvent(body);
+      } else {
+        await api.universalCreate(module, body);
+      }
       onCreated();
     } catch (err) {
       setError(friendlyError(err, 'Could not create the record.').message);
