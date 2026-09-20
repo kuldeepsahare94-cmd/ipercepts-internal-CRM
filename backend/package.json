@@ -9,12 +9,29 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0",
+    "@prisma/client": "^7.8.0",
     "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^12.11.1",
     "cors": "^2.8.6",
-    "dotenv": "^18.0.1",
+    "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "jsonwebtoken": "^9.0.3"
+    "imapflow": "^2.0.0",
+    "jsonwebtoken": "^9.0.3",
+    "mailparser": "^3.9.23",
+    "multer": "^2.3.0",
+    "nodemailer": "^9.0.5",
+    "pdfkit": "^0.19.1",
+    "prisma": "^7.8.0",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  },
+  "allowScripts": {
+    "@prisma/engines@7.8.0": true,
+    "better-sqlite3@12.11.1": true,
+    "prisma@7.8.0": true
   }
 }
