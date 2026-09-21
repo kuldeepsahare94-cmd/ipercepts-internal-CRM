@@ -23,7 +23,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
   CalendarDays, ChevronLeft, ChevronRight, Plus, RefreshCw, Users, User, X, Clock, MapPin,
-  Video, ExternalLink, Trash2, AlertTriangle, Link2, Download, CheckCircle2, Phone, ListTodo,
+  Video, ExternalLink, Trash2, AlertTriangle, Link2, Download, CheckCircle2, Phone, ListTodo, Search,
 } from 'lucide-react';
 import { api } from '../api';
 import { RecordPicker, AttendeePicker, TypeBadge } from '../components/RecordPicker';
@@ -37,12 +37,16 @@ import { usePermissions } from '../context/usePermissions';
 // meetings or full of your own reminders. Each source keeps one hue
 // everywhere — chip, dot, agenda row and legend — so the mapping is learnable
 // after about five seconds and never has to be looked up again.
+// Mapped onto the exact design-system tokens (index.css) rather than one-off
+// hex values, and kept identical to CalendarWidget.jsx's mapping — a call is
+// teal in the quick popup and teal here too, not two different colours for
+// the same thing depending which surface you're looking at it from.
 const SOURCE_STYLE = {
-  meeting: { label: 'CRM meetings', dot: '#2563EB', bg: '#EFF6FF', border: '#BFDBFE', text: '#1D4ED8' },
-  task: { label: 'Task due dates', dot: '#7C3AED', bg: '#F5F3FF', border: '#DDD6FE', text: '#6D28D9' },
-  call: { label: 'Calls & follow-ups', dot: '#EA580C', bg: '#FFF7ED', border: '#FED7AA', text: '#C2410C' },
-  google: { label: 'Google Calendar', dot: '#059669', bg: '#ECFDF5', border: '#A7F3D0', text: '#047857' },
-  microsoft: { label: 'Outlook', dot: '#0284C7', bg: '#F0F9FF', border: '#BAE6FD', text: '#0369A1' },
+  meeting: { label: 'CRM meetings', dot: 'var(--color-brand)', bg: 'var(--color-brand-soft)', text: 'var(--color-brand-hover)' },
+  task: { label: 'Task due dates', dot: 'var(--color-warning)', bg: 'var(--color-warning-soft)', text: 'var(--color-warning-strong)' },
+  call: { label: 'Calls & follow-ups', dot: 'var(--color-teal)', bg: 'var(--color-teal-soft)', text: 'var(--color-teal-strong)' },
+  google: { label: 'Google Calendar', dot: 'var(--color-success)', bg: 'var(--color-success-soft)', text: '#059669' },
+  microsoft: { label: 'Outlook', dot: 'var(--color-info)', bg: 'var(--color-info-soft)', text: 'var(--color-info-strong)' },
 };
 const styleFor = (s) => SOURCE_STYLE[s] || SOURCE_STYLE.meeting;
 
@@ -140,11 +144,11 @@ function EventChip({ event, onClick, compact = false }) {
     <button
       onClick={() => onClick(event)}
       title={`${event.title}${event.start_at && !event.all_day ? ` · ${fmtTime(event.start_at)}` : ''}`}
-      className={`w-full text-left rounded-md border px-1.5 py-0.5 truncate transition-colors hover:brightness-95
+      className={`w-full text-left rounded-lg px-2 py-1 truncate transition-colors hover:brightness-95 border-0
         ${compact ? 'text-[11px]' : 'text-xs'}`}
       style={{
         background: s.bg,
-        borderColor: overdue ? '#FCA5A5' : s.border,
+        outline: overdue ? '1px solid #FCA5A5' : 'none',
         color: s.text,
         textDecoration: done ? 'line-through' : 'none',
         opacity: done ? 0.65 : 1,
@@ -175,7 +179,7 @@ function MonthView({ anchor, byDay, onSelectEvent, onSelectDay }) {
 
   return (
     <div className="card overflow-hidden">
-      <div className="grid grid-cols-7 border-b border-line bg-[var(--color-canvas)]">
+      <div className="grid grid-cols-7 border-b border-[var(--color-line-soft)] bg-[var(--color-canvas)]">
         {WEEKDAYS.map((d) => (
           <div key={d} className="px-2 py-2 text-[11px] font-semibold text-[var(--color-muted)] text-center">{d}</div>
         ))}
@@ -187,9 +191,9 @@ function MonthView({ anchor, byDay, onSelectEvent, onSelectDay }) {
           const isToday = key === today;
           return (
             <div key={key}
-              className={`border-b border-r border-line/70 p-1.5 min-w-0 ${outside ? 'bg-[var(--color-canvas)]/50' : ''}`}>
+              className={`border-b border-r border-[var(--color-line-soft)] p-1.5 min-w-0 ${outside ? 'bg-[var(--color-canvas)]/50' : isToday ? 'bg-[var(--color-brand-faint)]' : ''}`}>
               <button onClick={() => onSelectDay(key)}
-                className={`w-6 h-6 rounded-full text-xs font-medium mb-1 flex items-center justify-center
+                className={`w-8 h-8 rounded-full text-xs font-medium mb-1 flex items-center justify-center
                   ${isToday ? 'text-white' : outside ? 'text-[var(--color-muted)]/60' : 'text-ink hover:bg-canvas'}`}
                 style={isToday ? { background: 'var(--color-brand)' } : undefined}>
                 {Number(key.slice(8))}
@@ -229,11 +233,11 @@ function TimeGridView({ days, byDay, onSelectEvent, onCreateAt }) {
 
   return (
     <div className="card overflow-hidden">
-      <div className="grid border-b border-line bg-[var(--color-canvas)]"
+      <div className="grid border-b border-[var(--color-line-soft)] bg-[var(--color-canvas)]"
         style={{ gridTemplateColumns: `56px repeat(${days.length}, minmax(0, 1fr))` }}>
         <div />
         {days.map((d) => (
-          <div key={d} className="px-2 py-2 text-center border-l border-line/70">
+          <div key={d} className="px-2 py-2 text-center border-l border-[var(--color-line-soft)]">
             <p className="text-[11px] text-[var(--color-muted)]">{WEEKDAYS[(dateFromKey(d).getDay() + 6) % 7]}</p>
             <p className={`text-sm font-semibold ${d === today ? 'text-[var(--color-brand)]' : 'text-ink'}`}>
               {Number(d.slice(8))}
@@ -246,7 +250,7 @@ function TimeGridView({ days, byDay, onSelectEvent, onCreateAt }) {
         <div className="grid border-b border-line" style={{ gridTemplateColumns: `56px repeat(${days.length}, minmax(0, 1fr))` }}>
           <div className="text-[10px] text-[var(--color-muted)] px-1 py-1.5 text-right">all day</div>
           {days.map((d, i) => (
-            <div key={d} className="border-l border-line/70 p-1 space-y-0.5 min-w-0">
+            <div key={d} className="border-l border-[var(--color-line-soft)] p-1 space-y-0.5 min-w-0">
               {allDayRows[i].map((e) => <EventChip key={e.id} event={e} onClick={onSelectEvent} compact />)}
             </div>
           ))}
@@ -265,7 +269,7 @@ function TimeGridView({ days, byDay, onSelectEvent, onCreateAt }) {
           {days.map((d) => {
             const timed = (byDay.get(d) || []).filter((e) => !e.all_day);
             return (
-              <div key={d} className="relative border-l border-line/70">
+              <div key={d} className="relative border-l border-[var(--color-line-soft)]">
                 {Array.from({ length: 24 }, (_, h) => (
                   <button key={h} onClick={() => onCreateAt(d, h)}
                     className="h-12 border-b border-line/40 w-full hover:bg-canvas/60 block" />
@@ -277,10 +281,10 @@ function TimeGridView({ days, byDay, onSelectEvent, onCreateAt }) {
                   const s = styleFor(e.source);
                   return (
                     <button key={e.id} onClick={() => onSelectEvent(e)}
-                      className="absolute left-0.5 right-0.5 rounded-md border px-1.5 py-0.5 text-left overflow-hidden hover:brightness-95"
+                      className="absolute left-0.5 right-0.5 rounded-lg px-1.5 py-0.5 text-left overflow-hidden hover:brightness-95 border-0"
                       style={{
                         top, height: Math.max((mins / 60) * 48 - 2, 18),
-                        background: s.bg, borderColor: s.border, color: s.text,
+                        background: s.bg, color: s.text,
                       }}>
                       <span className="text-[11px] font-medium block truncate">{e.title}</span>
                       {mins >= 45 && <span className="text-[10px] opacity-80 block truncate">{fmtTime(e.start_at)}</span>}
@@ -430,7 +434,7 @@ function EventDetail({ event, onClose, onEdit, onDelete, can }) {
           <div className="mt-5 flex gap-2 flex-wrap">
             {isCrmMeeting && can('calendar', 'edit') && (
               <button onClick={() => onEdit(event)}
-                className="text-xs font-semibold px-3 py-2 rounded-lg text-white" style={{ background: 'var(--color-ink)' }}>
+                className="btn-primary text-xs font-semibold px-3 py-2 rounded-lg">
                 Edit
               </button>
             )}
@@ -716,8 +720,7 @@ function EventForm({ initial, onClose, onSaved }) {
 
         <div className="flex gap-2 mt-5">
           <button type="submit" disabled={saving}
-            className="text-sm font-semibold px-4 py-2 rounded-lg text-white disabled:opacity-60"
-            style={{ background: 'var(--color-ink)' }}>
+            className="btn-primary text-sm font-semibold px-4 py-2 rounded-lg disabled:opacity-60">
             {saving ? 'Saving…' : meetingId ? 'Save changes' : 'Create meeting'}
           </button>
           <button type="button" onClick={onClose}
@@ -727,6 +730,276 @@ function EventForm({ initial, onClose, onSaved }) {
           Saved to the CRM and pushed to your connected calendars. Times are in {VIEWER_TZ}.
         </p>
       </form>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Find Available Time
+// ---------------------------------------------------------------------------
+// New feature (spec item 18/19 — "Find Available Time" did not exist before
+// this). Checks the requester's own calendar plus any colleagues picked
+// here, using the existing single-day GET /calendar/suggest endpoint,
+// looped client-side across the next few weekdays until it has a handful of
+// results — a group with busy calendars often has zero openings on any one
+// given day, so a single-day check alone would be of little use.
+function FindTimeModal({ onClose, onPickSlot }) {
+  const [q, setQ] = useState('');
+  const [results, setResults] = useState([]);
+  const [picked, setPicked] = useState([]);
+  const [duration, setDuration] = useState(30);
+  const [slots, setSlots] = useState(null);
+  const [searching, setSearching] = useState(false);
+  const [daysChecked, setDaysChecked] = useState(0);
+
+  useEffect(() => {
+    if (!q.trim()) { setResults([]); return undefined; }
+    const t = setTimeout(() => {
+      api.calendarPeople({ q, modules: 'users', limit: 8 })
+        .then((rows) => setResults((rows || []).filter((r) => !picked.some((p) => p.id === r.id))))
+        .catch(() => setResults([]));
+    }, 250);
+    return () => clearTimeout(t);
+  }, [q, picked]);
+
+  const addPerson = (r) => { setPicked((p) => [...p, r]); setQ(''); setResults([]); };
+  const removePerson = (id) => setPicked((p) => p.filter((r) => r.id !== id));
+
+  const search = async () => {
+    setSearching(true);
+    setSlots(null);
+    const withIds = picked.map((p) => p.id).join(',');
+    const tzOffset = -new Date().getTimezoneOffset();
+    const found = [];
+    let checked = 0;
+    let cursor = new Date();
+    while (found.length < 6 && checked < 7) {
+      const day = cursor.toISOString().slice(0, 10);
+      const isWeekend = [0, 6].includes(cursor.getDay());
+      if (!isWeekend) {
+        checked += 1;
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          const res = await api.calendarSuggest({
+            date: day, duration, tz_offset: tzOffset, with: withIds || undefined,
+          });
+          for (const s of (res.slots || [])) { if (found.length < 6) found.push(s); }
+        } catch { /* a day that fails to check is skipped, not fatal to the search */ }
+      }
+      cursor = new Date(cursor.getTime() + 86400000);
+    }
+    setDaysChecked(checked);
+    setSlots(found);
+    setSearching(false);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center p-0 sm:p-4">
+      <div className="absolute inset-0 bg-ink/30" onClick={onClose} />
+      <div className="relative bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full sm:max-w-md max-h-[88vh] overflow-y-auto p-5">
+        <div className="flex items-center justify-between">
+          <h2 className="font-display text-lg font-semibold text-ink">Find Available Time</h2>
+          <button onClick={onClose} className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-canvas">
+            <X className="w-4 h-4 text-[var(--color-muted)]" />
+          </button>
+        </div>
+
+        <div className="mt-4 space-y-3">
+          <div>
+            <span className="block text-xs font-medium text-ink mb-1">Check availability with</span>
+            {picked.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mb-1.5">
+                {picked.map((p) => (
+                  <span key={p.id} className="text-xs font-medium pl-2 pr-1 py-1 rounded-full inline-flex items-center gap-1"
+                    style={{ background: 'var(--color-brand-soft)', color: 'var(--color-brand-hover)' }}>
+                    {p.name}
+                    <button type="button" onClick={() => removePerson(p.id)}><X className="w-3 h-3" /></button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <div className="relative">
+              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search a colleague…"
+                className="w-full border border-line rounded-lg px-3 py-2 text-sm" />
+              {results.length > 0 && (
+                <div className="absolute z-10 mt-1 w-full bg-white border border-line rounded-lg shadow-lg overflow-hidden">
+                  {results.map((r) => (
+                    <button key={r.id} type="button" onClick={() => addPerson(r)}
+                      className="w-full text-left px-3 py-2 text-sm hover:bg-canvas">{r.name}</button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <p className="text-[11px] text-[var(--color-muted)] mt-1">
+              Leave this empty to just find a gap in your own calendar.
+            </p>
+          </div>
+
+          <label className="block">
+            <span className="block text-xs font-medium text-ink mb-1">Duration</span>
+            <select value={duration} onChange={(e) => setDuration(Number(e.target.value))}
+              className="w-full border border-line rounded-lg px-3 py-2 text-sm">
+              {[15, 30, 45, 60, 90].map((m) => <option key={m} value={m}>{m} minutes</option>)}
+            </select>
+          </label>
+
+          <button type="button" onClick={search} disabled={searching}
+            className="btn-primary w-full h-10 rounded-lg text-sm font-semibold disabled:opacity-60">
+            {searching ? 'Checking calendars…' : 'Search'}
+          </button>
+
+          {slots !== null && (
+            slots.length === 0 ? (
+              <p className="text-sm text-[var(--color-muted)] text-center py-3">
+                No shared opening in the next {daysChecked} working day{daysChecked === 1 ? '' : 's'}. Try a shorter duration.
+              </p>
+            ) : (
+              <div className="space-y-1.5 pt-1">
+                {slots.map((s, i) => (
+                  <button key={i} type="button" onClick={() => onPickSlot(s, picked)}
+                    className="w-full text-left px-3 py-2.5 rounded-lg border border-line hover:bg-[var(--color-brand-faint)] flex items-center justify-between">
+                    <span className="text-sm font-medium text-ink">
+                      {fmtDateLong(dayKey(s.start_at)).replace(/^\w+, /, '')} · {fmtTime(s.start_at)}–{fmtTime(s.end_at)}
+                    </span>
+                    <ChevronRight className="w-4 h-4 text-[var(--color-muted)]" />
+                  </button>
+                ))}
+              </div>
+            )
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Mobile Calendar — agenda-first, not the desktop grid squeezed down
+// ---------------------------------------------------------------------------
+// Spec section 25 is explicit that simply shrinking the Month grid onto a
+// phone is wrong (tiny text, horizontal scrolling). Below sm: (640px) this
+// renders a completely different tree — compact header, a tappable week
+// strip, a big "selected date" band, then a full-width agenda list — reusing
+// the SAME anchor/byDay/step state the desktop grid uses, so there's no
+// second data-fetching path to keep in sync.
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(
+    typeof window !== 'undefined' ? window.innerWidth < 640 : false,
+  );
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 640);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  return isMobile;
+}
+
+function MobileAgenda({ anchor, setAnchor, byDay, onSelectEvent, onSchedule, onShowFullCalendar }) {
+  const weekStart = startOfWeek(anchor);
+  const weekDays = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
+  const dayEvents = byDay.get(anchor) || [];
+  const isTodaySelected = anchor === todayKey();
+
+  return (
+    <div className="px-3">
+      {/* Compact header — month + Today/prev/next, not the full toolbar */}
+      <div className="flex items-center justify-between pt-1 pb-2">
+        <span className="text-base font-semibold text-ink">{fmtMonthTitle(anchor)}</span>
+        <div className="flex items-center gap-1">
+          <button onClick={() => setAnchor(addDays(anchor, -1))} aria-label="Previous day"
+            className="w-11 h-11 rounded-lg flex items-center justify-center hover:bg-canvas">
+            <ChevronLeft className="w-4 h-4 text-[var(--color-muted)]" />
+          </button>
+          <button onClick={() => setAnchor(todayKey())}
+            className="h-11 px-3 rounded-lg text-xs font-semibold hover:bg-canvas"
+            style={{ color: 'var(--color-brand)' }}>
+            Today
+          </button>
+          <button onClick={() => setAnchor(addDays(anchor, 1))} aria-label="Next day"
+            className="w-11 h-11 rounded-lg flex items-center justify-center hover:bg-canvas">
+            <ChevronRight className="w-4 h-4 text-[var(--color-muted)]" />
+          </button>
+        </div>
+      </div>
+
+      {/* Mini week selector — tap a day to jump the whole agenda to it */}
+      <div className="grid grid-cols-7 gap-1">
+        {weekDays.map((key) => {
+          const d = dateFromKey(key);
+          const selected = key === anchor;
+          const isToday = key === todayKey();
+          const count = (byDay.get(key) || []).length;
+          return (
+            <button key={key} onClick={() => setAnchor(key)}
+              className="flex flex-col items-center gap-1 py-2 rounded-[12px] min-h-[44px]"
+              style={{ background: selected ? 'var(--color-brand)' : 'transparent' }}>
+              <span className="text-[10px] font-semibold uppercase"
+                style={{ color: selected ? 'rgba(255,255,255,0.75)' : 'var(--color-faint)' }}>
+                {d.toLocaleDateString([], { weekday: 'narrow' })}
+              </span>
+              <span className={`text-sm font-semibold ${selected ? 'text-white' : isToday ? '' : 'text-ink'}`}
+                style={!selected && isToday ? { color: 'var(--color-brand)' } : undefined}>
+                {d.getDate()}
+              </span>
+              {count > 0 && (
+                <span className="w-1 h-1 rounded-full"
+                  style={{ background: selected ? '#fff' : 'var(--color-brand)' }} />
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Selected date band */}
+      <div className="flex items-center gap-2.5 py-4">
+        <span className="text-3xl font-bold text-ink">{dateFromKey(anchor).getDate()}</span>
+        <div className="flex flex-col">
+          {isTodaySelected && (
+            <span className="text-[10px] font-bold tracking-[0.05em] text-white px-1.5 py-0.5 rounded self-start"
+              style={{ background: 'var(--color-brand)' }}>TODAY</span>
+          )}
+          <span className="text-xs text-[var(--color-muted)] mt-0.5">
+            {dateFromKey(anchor).toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' })}
+          </span>
+        </div>
+      </div>
+
+      {/* Agenda — full-width cards, 44px+ touch target, no horizontal scroll */}
+      <div className="space-y-2.5 pb-3">
+        {dayEvents.length === 0 && (
+          <p className="text-sm text-[var(--color-muted)] text-center py-10">Nothing scheduled this day.</p>
+        )}
+        {dayEvents.map((e, i) => {
+          const s = SOURCE_STYLE[e.source] || SOURCE_STYLE.meeting;
+          return (
+            <button key={i} onClick={() => onSelectEvent(e)}
+              className="w-full text-left flex items-stretch gap-3 rounded-[12px] border border-line bg-white min-h-[64px] py-3 pr-3 overflow-hidden">
+              <span className="w-1 rounded-l-[12px] shrink-0" style={{ background: s.dot }} />
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-semibold" style={{ color: 'var(--color-brand)' }}>
+                  {e.all_day ? 'All day' : fmtTime(e.start_at)}
+                </div>
+                <div className="text-[15px] font-semibold text-ink truncate mt-0.5">{e.title || 'Untitled'}</div>
+                {(e.related_label || e.location) && (
+                  <div className="text-xs text-[var(--color-muted)] truncate mt-0.5">
+                    {e.related_label || e.location}
+                  </div>
+                )}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      <button onClick={onSchedule}
+        className="btn-primary w-full h-12 rounded-[12px] text-sm font-semibold flex items-center justify-center gap-1.5 mb-2">
+        <Plus className="w-4 h-4" /> Schedule Meeting
+      </button>
+      <button onClick={onShowFullCalendar}
+        className="w-full h-11 rounded-[12px] text-sm font-semibold flex items-center justify-center"
+        style={{ color: 'var(--color-brand)' }}>
+        Open Full Calendar
+      </button>
     </div>
   );
 }
@@ -751,6 +1024,9 @@ export default function CalendarPage() {
   const [error, setError] = useState(null);
   const [selected, setSelected] = useState(null);
   const [editing, setEditing] = useState(null);
+  const [findingTime, setFindingTime] = useState(false);
+  const isMobile = useIsMobile();
+  const [mobileShowGrid, setMobileShowGrid] = useState(false);
 
   // The instants bounding the current view. The month grid shows six weeks, so
   // the range is the grid's, not the calendar month's — otherwise events in
@@ -840,6 +1116,21 @@ export default function CalendarPage() {
     setEditing({ start: toLocalInput(start.toISOString()), end: toLocalInput(end.toISOString()) });
   };
 
+  // A slot picked in Find Available Time opens the same, already-tested
+  // create form the rest of the calendar uses — pre-filled with the chosen
+  // time and the colleagues that slot was checked against — rather than
+  // silently booking anything on the person's behalf.
+  const openFromSuggestedSlot = (slot, attendeeUsers) => {
+    setFindingTime(false);
+    setEditing({
+      start: toLocalInput(slot.start_at),
+      end: toLocalInput(slot.end_at),
+      attendees: attendeeUsers.map((u) => ({
+        kind: 'user', module: 'users', record_id: u.id, name: u.name, email: u.email,
+      })),
+    });
+  };
+
   const removeEvent = async (event) => {
     // eslint-disable-next-line no-alert
     if (!window.confirm(`Delete "${event.title}"? It will also be removed from your connected calendars.`)) return;
@@ -859,10 +1150,9 @@ export default function CalendarPage() {
         icon={CalendarDays}
         accent="meetings"
       >
-        {can('calendar', 'create') && (
+        {can('calendar', 'create') && !(isMobile && !mobileShowGrid) && (
           <button onClick={() => openCreate(todayKey(), 10)}
-            className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg text-white"
-            style={{ background: 'var(--color-ink)' }}>
+            className="btn-primary flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg">
             <Plus className="w-4 h-4" /> New meeting
           </button>
         )}
@@ -888,6 +1178,13 @@ export default function CalendarPage() {
         </div>
       )}
 
+      {(!isMobile || mobileShowGrid) ? (<>
+      {isMobile && mobileShowGrid && (
+        <button onClick={() => setMobileShowGrid(false)}
+          className="flex items-center gap-1 text-xs font-semibold mt-4" style={{ color: 'var(--color-brand)' }}>
+          <ChevronLeft className="w-3.5 h-3.5" /> Back to Agenda
+        </button>
+      )}
       {/* Toolbar */}
       <div className="flex items-center gap-2 flex-wrap mt-5">
         <div className="flex items-center gap-1">
@@ -914,12 +1211,18 @@ export default function CalendarPage() {
         </div>
 
         <div className="flex gap-1">
-          <button onClick={() => setScope(scope === 'mine' ? 'team' : 'mine')}
-            title={scope === 'mine' ? 'Showing only your items' : 'Showing the whole team'}
-            className="text-xs font-medium px-2.5 h-8 rounded-lg border border-line hover:bg-canvas inline-flex items-center gap-1.5">
-            {scope === 'mine' ? <User className="w-3.5 h-3.5" /> : <Users className="w-3.5 h-3.5" />}
-            {scope === 'mine' ? 'Mine' : 'Team'}
-          </button>
+          <div className="flex rounded-lg border border-line overflow-hidden">
+            <button onClick={() => setScope('mine')} title="Showing only your items"
+              className={`text-xs font-medium px-2.5 h-8 inline-flex items-center gap-1.5 ${
+                scope === 'mine' ? 'bg-ink text-white' : 'text-[var(--color-muted)] hover:bg-canvas'}`}>
+              <User className="w-3.5 h-3.5" /> My Calendar
+            </button>
+            <button onClick={() => setScope('team')} title="Showing the whole team"
+              className={`text-xs font-medium px-2.5 h-8 inline-flex items-center gap-1.5 border-l border-line ${
+                scope === 'team' ? 'bg-ink text-white' : 'text-[var(--color-muted)] hover:bg-canvas'}`}>
+              <Users className="w-3.5 h-3.5" /> Team Calendar
+            </button>
+          </div>
           <button onClick={() => load(true)} title="Sync now"
             className="w-8 h-8 rounded-lg border border-line flex items-center justify-center hover:bg-canvas">
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
@@ -929,6 +1232,12 @@ export default function CalendarPage() {
             className="w-8 h-8 rounded-lg border border-line flex items-center justify-center hover:bg-canvas">
             <Download className="w-3.5 h-3.5" />
           </button>
+          {can('calendar', 'create') && (
+            <button onClick={() => setFindingTime(true)}
+              className="text-xs font-medium px-2.5 h-8 rounded-lg border border-line hover:bg-canvas inline-flex items-center gap-1.5">
+              <Search className="w-3.5 h-3.5" /> Find Available Time
+            </button>
+          )}
         </div>
       </div>
 
@@ -942,7 +1251,7 @@ export default function CalendarPage() {
             <button key={key} onClick={() => toggleSource(key)}
               className={`text-[11px] font-medium px-2 py-1 rounded-full border inline-flex items-center gap-1.5 ${
                 on ? '' : 'opacity-45'}`}
-              style={{ background: on ? s.bg : 'transparent', borderColor: s.border, color: s.text }}>
+              style={{ background: on ? s.bg : 'transparent', borderColor: 'var(--color-line)', color: s.text }}>
               <Icon className="w-3 h-3" /> {s.label}
             </button>
           );
@@ -996,6 +1305,12 @@ export default function CalendarPage() {
           {connections.length === 0 && ' Connect a calendar in settings to see your existing events here.'}
         </p>
       )}
+      </>) : (
+        <MobileAgenda anchor={anchor} setAnchor={setAnchor} byDay={byDay}
+          onSelectEvent={setSelected}
+          onSchedule={() => openCreate(anchor, 10)}
+          onShowFullCalendar={() => setMobileShowGrid(true)} />
+      )}
 
       {selected && (
         <EventDetail event={selected} can={can}
@@ -1021,6 +1336,10 @@ export default function CalendarPage() {
       {editing && (
         <EventForm initial={editing} onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); load(false); }} />
+      )}
+
+      {findingTime && (
+        <FindTimeModal onClose={() => setFindingTime(false)} onPickSlot={openFromSuggestedSlot} />
       )}
     </div>
   );

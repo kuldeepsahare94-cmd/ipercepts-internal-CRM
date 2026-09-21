@@ -53,7 +53,7 @@ function bytes(n) {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function Avatar({ name, online, size = 36 }) {
+function Avatar({ name, online, size = 38 }) {
   return (
     <div className="relative shrink-0" style={{ width: size, height: size }}>
       <div className="rounded-full flex items-center justify-center text-white font-semibold"
@@ -320,12 +320,18 @@ function BroadcastModal({ users, onClose, onSent }) {
 }
 
 // ================================================================= widget
-export default function ChatWidget() {
+// variant "popup" (default): the compact header icon + floating popup.
+// variant "page": the same panel rendered inline, filling its container —
+// used by pages/TeamChat.jsx for "Open Full Chat". Same state, same
+// polling, same send/receive logic either way; only the outer chrome
+// differs, which is why this stayed one file instead of two.
+export default function ChatWidget({ variant = 'popup' }) {
+  const isPage = variant === 'page';
   const { user } = useAuth();
   const navigate = useNavigate();
   const canChat = !!user?.permissions?.chat?.view;
 
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(isPage);
   const [users, setUsers] = useState([]);
   const [conversations, setConversations] = useState([]);
   const [activeId, setActiveId] = useState(null);
@@ -335,6 +341,7 @@ export default function ChatWidget() {
   const [unread, setUnread] = useState(0);
   const [search, setSearch] = useState('');
   const [view, setView] = useState('list');          // list | group | broadcast
+  const [tab, setTab] = useState('all');              // all | unread | groups — filters the conversation list only
   const [toasts, setToasts] = useState([]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
@@ -592,17 +599,24 @@ export default function ChatWidget() {
 
   if (!canChat) return null;
 
-  const filteredUsers = users.filter((u) =>
-    (u.full_name || u.username).toLowerCase().includes(search.toLowerCase()));
-  const filteredConvs = conversations.filter((c) =>
-    (c.title || '').toLowerCase().includes(search.toLowerCase()));
+  // "Everyone" (people with no conversation yet) is for starting a new chat,
+  // which only makes sense in the All tab — Unread/Groups filter EXISTING
+  // conversations, they don't have an equivalent among people you haven't
+  // messaged yet.
+  const filteredUsers = tab === 'all'
+    ? users.filter((u) => (u.full_name || u.username).toLowerCase().includes(search.toLowerCase()))
+    : [];
+  const filteredConvs = conversations
+    .filter((c) => (c.title || '').toLowerCase().includes(search.toLowerCase()))
+    .filter((c) => (tab === 'unread' ? c.unread > 0 : tab === 'groups' ? c.type === 'group' : true));
 
   return (
     <>
-      {/* Header trigger */}
+      {/* Header trigger — a dedicated page has no icon to click, it IS the panel */}
+      {!isPage && (
       <button onClick={() => setOpen((o) => !o)} title="Team chat"
-        className="relative w-9 h-9 rounded-lg flex items-center justify-center hover:bg-[var(--color-canvas)] transition-colors">
-        <MessageSquare className="w-[18px] h-[18px] text-[var(--color-muted)]" />
+        className="relative w-10 h-10 rounded-xl flex items-center justify-center hover:bg-[var(--color-brand-soft)] transition-colors">
+        <MessageSquare className="w-[18px] h-[18px] text-[var(--color-brand)]" />
         {unread > 0 && (
           <span className="absolute -top-0.5 -right-0.5 min-w-[17px] h-[17px] px-1 rounded-full text-[10px] font-bold
             text-white flex items-center justify-center" style={{ background: 'var(--color-danger)' }}>
@@ -610,6 +624,7 @@ export default function ChatWidget() {
           </span>
         )}
       </button>
+      )}
 
       {/* Pop-up notifications and the panel are portalled to <body>: the
           header they are declared inside is `sticky z-30`, which creates a
@@ -635,7 +650,7 @@ export default function ChatWidget() {
       {/* Minimised: a small bar in the corner. Polling, unread counts and
           popups all keep working — this is only a change of size, so people
           can leave chat running while they work. */}
-      {open && minimised && createPortal((
+      {!isPage && open && minimised && createPortal((
         <button
           type="button"
           onClick={() => setMinimised(false)}
@@ -656,24 +671,39 @@ export default function ChatWidget() {
         </button>
       ), document.body)}
 
-      {open && !minimised && createPortal((
+      {/* Same panel either way — only whether it's portalled to <body> as a
+          floating popup, or left right where it is as a normal page block,
+          differs by variant. */}
+      {open && !minimised && (isPage ? (v) => v : (children) => createPortal(children, document.body))((
         <>
           {/* No dimming backdrop and no full-screen click-catcher: the point
-              of a team chat is to keep it open WHILE working, and a 760px
-              panel over a dimmed page blocked most of a laptop screen. The
-              CRM stays fully usable behind this. Close with the X, the header
-              icon, or Escape. */}
+              of a team chat is to keep it open WHILE working. On phones it
+              still takes the full screen — a 380px popup makes no sense on a
+              6" display — but at sm: and up this is the compact, single-pane
+              "quick chat" popup: list OR conversation, never both side by
+              side, the same way the mobile layout already worked below sm:.
+              The CRM stays fully usable behind this. Close with the X, the
+              header icon, or Escape.
+              In page mode there's no portal, no fixed positioning, and no
+              backdrop at all — it's a normal block inside the page, and (on
+              a wide enough screen) both panes show side by side the way the
+              popup deliberately does NOT, because a full page has the room. */}
           <aside
             role="dialog"
             aria-label="Team chat"
-            className="fixed right-0 bottom-0 z-[76] bg-white shadow-2xl border-l border-t border-line
-                       flex flex-col sm:flex-row overflow-hidden
-                       w-full sm:w-[min(620px,calc(100vw-2rem))]
-                       top-0 sm:top-16 sm:rounded-tl-2xl">
+            className={isPage
+              ? 'relative w-full h-full bg-white overflow-hidden flex flex-col sm:flex-row rounded-2xl border border-[var(--color-line)]'
+              : `fixed z-[76] bg-white overflow-hidden flex flex-col rounded-2xl border border-[var(--color-line)]
+                 left-3 right-3 bottom-3 max-h-[72vh]
+                 sm:inset-auto sm:left-auto sm:bottom-auto sm:right-[18px] sm:top-[72px]
+                 sm:w-[380px] sm:h-[560px] sm:max-h-[70vh]`}
+            style={isPage ? undefined : { boxShadow: '0 12px 35px rgba(23,35,60,0.14)' }}>
             {/* ---------------- left: people and conversations ---------------- */}
-            <div className={`${activeId ? 'hidden sm:flex' : 'flex'} flex-col w-full sm:w-[240px] border-r border-line min-h-0 relative`}>
+            <div className={isPage
+              ? `${activeId ? 'hidden sm:flex' : 'flex'} flex-col w-full sm:w-[300px] sm:border-r sm:border-line min-h-0 relative`
+              : `${activeId ? 'hidden' : 'flex'} flex-col w-full min-h-0 relative`}>
               <div className="flex items-center justify-between px-4 py-3 border-b border-line">
-                <h2 className="text-sm font-semibold text-ink">Team Chat</h2>
+                <h2 className="text-base font-semibold text-ink">Team Chat</h2>
                 <div className="flex items-center gap-1">
                   {/* Notification tone. Lives here rather than in Settings
                       because it is chosen in the moment a sound annoys you,
@@ -728,22 +758,38 @@ export default function ChatWidget() {
                     className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-canvas">
                     <Plus className="w-4 h-4 text-[var(--color-muted)]" />
                   </button>
+                  {!isPage && (<>
                   <button onClick={() => setMinimised(true)} title="Minimise"
                     className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-canvas">
                     <Minus className="w-4 h-4 text-[var(--color-muted)]" />
                   </button>
                   <button onClick={() => setOpen(false)} title="Close"
-                    className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-canvas sm:hidden">
+                    className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-canvas">
                     <X className="w-4 h-4 text-[var(--color-muted)]" />
                   </button>
+                  </>)}
                 </div>
+              </div>
+
+              <div className="flex items-center gap-1 px-3 pt-2.5 pb-1">
+                {[['all', 'All'], ['unread', 'Unread'], ['groups', 'Groups']].map(([id, label]) => (
+                  <button key={id} onClick={() => setTab(id)}
+                    className={`px-2.5 h-8 rounded-lg text-xs font-medium transition-colors ${
+                      tab === id
+                        ? 'bg-[var(--color-brand-soft)] text-[var(--color-brand)]'
+                        : 'text-[var(--color-muted)] hover:bg-canvas'
+                    }`}>
+                    {label}
+                  </button>
+                ))}
               </div>
 
               <div className="px-3 py-2 border-b border-line">
                 <div className="relative">
-                  <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--color-muted)]" />
+                  <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-muted)]" />
                   <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search people…"
-                    className="w-full border border-line rounded-lg pl-8 pr-3 py-1.5 text-xs" />
+                    className="w-full border border-[var(--color-line)] rounded-[10px] pl-8 pr-3 h-10 text-xs bg-[var(--color-canvas)]
+                               focus:outline-none focus:border-[var(--color-brand)] focus:bg-white" />
                 </div>
               </div>
 
@@ -753,9 +799,13 @@ export default function ChatWidget() {
                 )}
                 {filteredConvs.map((c) => (
                   <button key={c.id} onClick={() => setActiveId(c.id)}
-                    className={`w-full text-left px-3 py-2.5 flex items-center gap-2.5 hover:bg-canvas ${activeId === c.id ? 'bg-canvas' : ''}`}>
+                    className={`w-full text-left pl-[9px] pr-3 py-3 flex items-center gap-2.5 border-l-[3px] ${
+                      activeId === c.id
+                        ? 'bg-[var(--color-brand-soft)] border-l-[var(--color-brand)]'
+                        : 'border-l-transparent hover:bg-[var(--color-brand-faint)]'
+                    }`}>
                     {c.type === 'group'
-                      ? <div className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 text-white"
+                      ? <div className="w-[38px] h-[38px] rounded-full flex items-center justify-center shrink-0 text-white"
                           style={{ background: avatarGradientFor(c.title || 'group') }}><Users className="w-4 h-4" /></div>
                       : <Avatar name={c.title} online={c.online} />}
                     <span className="min-w-0 flex-1">
@@ -768,8 +818,12 @@ export default function ChatWidget() {
                           {c.last_message ? `${c.type === 'group' && c.last_message.sender_id !== user.id ? `${c.last_message.sender_name}: ` : ''}${c.last_message.body}` : 'No messages yet'}
                         </span>
                         {c.unread > 0 && (
+                          // Purple here (calmer, brand-coloured), not the red
+                          // used on the header icon — that badge is the "you
+                          // haven't looked at all" alert; this one is a count
+                          // inside chat you're already looking at.
                           <span className="min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold text-white
-                            flex items-center justify-center shrink-0" style={{ background: 'var(--color-danger)' }}>{c.unread}</span>
+                            flex items-center justify-center shrink-0" style={{ background: 'var(--color-brand)' }}>{c.unread}</span>
                         )}
                       </span>
                     </span>
@@ -794,6 +848,15 @@ export default function ChatWidget() {
                 )}
               </div>
 
+              {!isPage && (
+                <div className="px-4 py-2.5 border-t border-[var(--color-line-soft)] text-center shrink-0">
+                  <button onClick={() => { setOpen(false); navigate('/chat'); }}
+                    className="text-[13px] font-semibold" style={{ color: 'var(--color-brand)' }}>
+                    Open Full Chat →
+                  </button>
+                </div>
+              )}
+
               {view === 'group' && (
                 <NewGroupModal users={users} onClose={() => setView('list')}
                   onCreated={(c) => { setView('list'); setActiveId(c.id); tick(); }} />
@@ -805,16 +868,23 @@ export default function ChatWidget() {
             </div>
 
             {/* ---------------- right: the conversation ---------------- */}
-            <div className={`${activeId ? 'flex' : 'hidden sm:flex'} flex-col flex-1 min-w-0 min-h-0`}>
+            <div className={isPage
+              ? `${activeId ? 'flex' : 'hidden sm:flex'} flex-col flex-1 min-w-0 min-h-0`
+              : `${activeId ? 'flex' : 'hidden'} flex-col flex-1 min-w-0 min-h-0`}>
               {!active ? (
                 <div className="flex-1 flex flex-col items-center justify-center text-center px-8">
-                  <MessageSquare className="w-10 h-10 text-[var(--color-line)] mb-3" />
-                  <p className="text-sm text-[var(--color-muted)]">Pick someone to start chatting.</p>
+                  <div className="w-12 h-12 rounded-full flex items-center justify-center mb-3"
+                    style={{ background: 'var(--color-brand-soft)' }}>
+                    <MessageSquare className="w-5 h-5" style={{ color: 'var(--color-brand)' }} />
+                  </div>
+                  <p className="text-sm font-medium text-ink">Select a conversation</p>
+                  <p className="text-xs text-[var(--color-muted)] mt-0.5">Choose a teammate to start chatting.</p>
                 </div>
               ) : (
                 <>
                   <div className="flex items-center gap-2.5 px-4 py-3 border-b border-line">
-                    <button onClick={() => setActiveId(null)} className="sm:hidden">
+                    <button onClick={() => setActiveId(null)} title="Back to conversations"
+                      className={isPage ? 'sm:hidden' : ''}>
                       <ArrowLeft className="w-4 h-4 text-[var(--color-muted)]" />
                     </button>
                     {active.type === 'group'
@@ -833,14 +903,16 @@ export default function ChatWidget() {
                       className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-canvas">
                       {active.muted ? <BellOff className="w-4 h-4 text-[var(--color-muted)]" /> : <Bell className="w-4 h-4 text-[var(--color-muted)]" />}
                     </button>
+                    {!isPage && (<>
                     <button onClick={() => setMinimised(true)} title="Minimise"
-                      className="w-8 h-8 rounded-lg hidden sm:flex items-center justify-center hover:bg-canvas">
+                      className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-canvas">
                       <Minus className="w-4 h-4 text-[var(--color-muted)]" />
                     </button>
                     <button onClick={() => setOpen(false)} title="Close"
-                      className="w-8 h-8 rounded-lg hidden sm:flex items-center justify-center hover:bg-canvas">
+                      className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-canvas">
                       <X className="w-4 h-4 text-[var(--color-muted)]" />
                     </button>
+                    </>)}
                   </div>
 
                   <div ref={scrollRef} className="flex-1 overflow-y-auto min-h-0 px-4 py-3 space-y-2" style={{ background: 'var(--color-canvas)' }}>
@@ -907,9 +979,10 @@ export default function ChatWidget() {
                       onChange={(e) => setDraft(e.target.value)}
                       onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
                       rows={1} placeholder="Write a message…  (Enter to send, Shift+Enter for a new line)"
-                      className="flex-1 border border-line rounded-xl px-3 py-2 text-sm resize-none max-h-32" />
+                      className="flex-1 border border-[var(--color-line)] rounded-[10px] px-3 py-2 text-sm resize-none max-h-32
+                                 bg-[var(--color-canvas)] focus:outline-none focus:border-[var(--color-brand)] focus:bg-white" />
                     <button type="submit" disabled={sending || (!draft.trim() && !files.length)}
-                      className="w-9 h-9 rounded-lg flex items-center justify-center text-white disabled:opacity-40 shrink-0"
+                      className="w-10 h-10 rounded-lg flex items-center justify-center text-white disabled:opacity-40 shrink-0"
                       style={{ background: 'var(--color-brand)' }}>
                       <Send className="w-4 h-4" />
                     </button>

@@ -21,6 +21,7 @@ const LeadDetail = lazy(() => import('./pages/LeadDetail'));
 const Payments = lazy(() => import('./pages/Payments'));
 const Reports = lazy(() => import('./pages/Reports'));
 const CalendarPage = lazy(() => import('./pages/Calendar'));
+const TeamChat = lazy(() => import('./pages/TeamChat'));
 const ExtensionScreen = lazy(() => import('./extensions/ExtensionScreen'));
 const SettingsCalendar = lazy(() => import('./pages/SettingsCalendar'));
 const Roles = lazy(() => import('./pages/Roles'));
@@ -115,6 +116,7 @@ export default function App() {
               {/* Catch-all: without this, any unmatched path renders an
                   empty tree, which looks identical to a crashed app. */}
               <Route path="/calendar" element={<CalendarPage />} />
+              <Route path="/chat" element={<TeamChat />} />
           {/* Screens from features built for this customer only. One route
               serves them all; which exist is decided at runtime by what is
               installed on this customer's server. */}

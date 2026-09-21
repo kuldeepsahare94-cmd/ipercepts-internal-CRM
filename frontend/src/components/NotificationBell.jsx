@@ -65,8 +65,9 @@ export default function NotificationBell() {
 
   return (
     <div ref={ref} className="relative shrink-0">
-      <button onClick={() => setOpen((s) => !s)} className="relative p-2 text-slate-500 hover:text-ink">
-        <Bell className="w-5 h-5" />
+      <button onClick={() => setOpen((s) => !s)}
+        className="relative w-10 h-10 rounded-xl flex items-center justify-center hover:bg-[var(--color-brand-soft)] transition-colors">
+        <Bell className="w-5 h-5" style={{ color: 'var(--color-brand)' }} />
         {unread > 0 && (
           <span className="absolute top-1 right-1 min-w-[16px] h-4 px-1 rounded-full bg-warn text-white text-[10px] font-semibold flex items-center justify-center">
             {unread > 9 ? '9+' : unread}
@@ -75,7 +76,8 @@ export default function NotificationBell() {
       </button>
 
       {open && (
-        <div className="absolute top-full right-0 mt-2 w-80 bg-white border border-line rounded-xl shadow-lg overflow-hidden z-50">
+        <div className="absolute top-full right-0 mt-2 w-80 bg-white border border-[var(--color-line)] rounded-2xl overflow-hidden z-50"
+          style={{ boxShadow: '0 12px 35px rgba(23,35,60,0.14)' }}>
           <div className="flex items-center justify-between px-4 py-3 border-b border-line">
             <span className="text-sm font-semibold text-ink">Notifications</span>
             {unread > 0 && (

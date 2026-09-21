@@ -495,7 +495,7 @@ export default function Settings() {
             <CalendarDays className="w-5 h-5" />
           </div>
           <div>
-            <h2 className="text-sm font-semibold text-ink">Calendar</h2>
+            <h2 className="text-sm font-semibold text-ink">My Integrations</h2>
             <p className="text-xs text-slate-500 mt-0.5">
               Connect your own Google or Outlook calendar, and choose what syncs each way.
             </p>
