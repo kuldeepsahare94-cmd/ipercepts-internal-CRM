@@ -357,4 +357,44 @@ function conflictsFor({ userId, start, end, ignoreMeetingId = null, teamUserIds 
   });
 }
 
-module.exports = { build, conflictsFor, ALL_SOURCES, relatedLabel };
+// Busy blocks across a SPECIFIC set of candidate users — the primitive
+// "Find Available Time" needs (checking who's free among the people you're
+// about to invite), which is a different question from conflictsFor's
+// "is MY calendar clear" or build's scope:'team' ("everything the team has
+// chosen to share, for browsing"). Deliberately narrower than both:
+//   - CRM meetings/calls are included for every candidate regardless of
+//     their personal share preference, because those are already
+//     org-visible through the meetings table itself (that's how Team
+//     Calendar works today) — this isn't a new exposure.
+//   - A candidate's external Google/Outlook busy time is included only if
+//     THAT candidate has opted their own connection into share_with_team.
+//     A candidate who hasn't shared is simply not checked — same as
+//     everywhere else in iCRM, nothing is overridden for this feature.
+//   - Tasks are excluded: a task's due date is a deadline, not a time
+//     block, and the feed already marks tasks show_as:'free' for exactly
+//     this reason (see tasks() above).
+function busyFor({ userIds, from, to }) {
+  if (!userIds || !userIds.length) return [];
+  const isBusy = (e) => !e.all_day && e.show_as !== 'free' && e.status !== 'cancelled';
+
+  const blocks = [
+    ...meetings({ from, to, userIds }).filter(isBusy),
+    ...calls({ from, to, userIds }).filter(isBusy),
+  ];
+
+  const placeholders = userIds.map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT e.start_at, e.end_at, e.all_day, e.status, e.show_as
+    FROM calendar_events e
+    JOIN calendar_connections c ON c.id = e.connection_id
+    WHERE e.start_at IS NOT NULL AND e.start_at < ? AND COALESCE(e.end_at, e.start_at) >= ?
+      AND c.user_id IN (${placeholders}) AND c.share_with_team = 1
+  `).all(to, from, ...userIds);
+  for (const e of rows) {
+    if (e.all_day || e.status === 'cancelled' || e.show_as === 'free') continue;
+    blocks.push({ start_at: e.start_at, end_at: e.end_at || e.start_at });
+  }
+  return blocks;
+}
+
+module.exports = { build, conflictsFor, busyFor, ALL_SOURCES, relatedLabel };

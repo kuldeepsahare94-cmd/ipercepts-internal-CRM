@@ -534,9 +534,14 @@ router.get('/suggest', requirePermission('calendar', 'view'), (req, res) => {
     const from = new Date(localMidnightUtc + dayStartHour * 3600000).toISOString();
     const to = new Date(localMidnightUtc + dayEndHour * 3600000).toISOString();
 
-    const busy = feed.build({
-      from, to, userId: req.user.id, scope: 'mine', sources: feed.ALL_SOURCES, teamUserIds: teamUserIds(),
-    }).filter((e) => e.show_as !== 'free' && !e.all_day && e.status !== 'cancelled');
+    // "Find Available Time": pass ?with=12,47 to also require those
+    // colleagues be free, not just the requester — see feed.busyFor for
+    // exactly what "free" means across other people's calendars.
+    const withIds = String(req.query.with || '')
+      .split(',').map((s) => Number(s.trim())).filter((n) => Number.isInteger(n) && n > 0);
+    const candidateIds = [...new Set([req.user.id, ...withIds])];
+
+    const busy = feed.busyFor({ userIds: candidateIds, from, to });
 
     const slots = [];
     for (let t = new Date(from).getTime(); t + duration * 60000 <= new Date(to).getTime(); t += 30 * 60000) {
@@ -546,7 +551,7 @@ router.get('/suggest', requirePermission('calendar', 'view'), (req, res) => {
       if (!clash) slots.push({ start_at: s, end_at: e });
       if (slots.length >= 12) break;
     }
-    res.json({ date, duration, slots, busy_count: busy.length });
+    res.json({ date, duration, slots, busy_count: busy.length, checked_user_ids: candidateIds });
   } catch (err) { fail(res, err); }
 });
 
