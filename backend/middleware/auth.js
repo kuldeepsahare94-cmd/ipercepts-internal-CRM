@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const db = require('../db');
+const accessControl = require('../services/accessControl');
 
 // Inlined rather than imported from services/chatService to keep the auth
 // middleware free of a dependency on a feature module (chatService requires
@@ -61,6 +62,26 @@ function requireAuth(req, res, next) {
     `).get(payload.id);
     if (!user || !user.active) return res.status(401).json({ error: 'Account is inactive or no longer exists' });
     user.permissions = loadPermissions(user.role_id);
+
+    // IP & time-based access control (Settings → Security → IP & Access
+    // Restrictions). Checked on EVERY authenticated request, not only at
+    // login — with a stateless JWT (no server-side session table) this is
+    // what makes "an admin changes my policy while I'm logged in" take
+    // effect on my very next request, rather than needing a separate
+    // session-invalidation mechanism this app doesn't have.
+    const ip = accessControl.clientIp(req);
+    const decision = accessControl.evaluateAccess({ userId: user.id, roleId: user.role_id, ip });
+    if (!decision.allowed) {
+      accessControl.logAccess({
+        eventType: 'request_check', userId: user.id, clientIp: ip, userAgent: accessControl.userAgent(req),
+        allowed: false, reason: decision.reason, policyId: decision.policy?.id,
+      });
+      return res.status(403).json({
+        error: accessControl.DENIAL_MESSAGES[decision.reason] || 'Access Restricted — please contact your administrator.',
+        access_restricted: true,
+      });
+    }
+
     req.user = user;
     // Presence for the team chat: "online" means signed in and using the
     // CRM, so it is refreshed by any authenticated request rather than only

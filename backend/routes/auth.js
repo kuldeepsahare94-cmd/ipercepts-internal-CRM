@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const db = require('../db');
 const { requireAuth, loadPermissions, JWT_SECRET } = require('../middleware/auth');
+const accessControl = require('../services/accessControl');
 
 router.post('/login', (req, res) => {
   const { username, password } = req.body;
@@ -15,6 +16,25 @@ router.post('/login', (req, res) => {
 
   const ok = bcrypt.compareSync(password, user.password_hash);
   if (!ok) return res.status(401).json({ error: 'Invalid username or password' });
+
+  // IP & time-based access control. Checked here too, not only on later API
+  // calls via requireAuth — so a correct password from a disallowed network
+  // or outside allowed hours gets the clear "Access Restricted" message
+  // immediately, instead of a token that would just fail on the very next
+  // request anyway.
+  const ip = accessControl.clientIp(req);
+  const ua = accessControl.userAgent(req);
+  const decision = accessControl.evaluateAccess({ userId: user.id, roleId: user.role_id, ip });
+  accessControl.logAccess({
+    eventType: 'login_check', userId: user.id, clientIp: ip, userAgent: ua,
+    allowed: decision.allowed, reason: decision.reason, policyId: decision.policy?.id,
+  });
+  if (!decision.allowed) {
+    return res.status(403).json({
+      error: accessControl.DENIAL_MESSAGES[decision.reason] || 'Access Restricted — please contact your administrator.',
+      access_restricted: true,
+    });
+  }
 
   const role = user.role_id ? db.prepare('SELECT id, name FROM roles WHERE id=?').get(user.role_id) : null;
   const token = jwt.sign({ id: user.id }, JWT_SECRET, { expiresIn: '7d' });

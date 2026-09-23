@@ -30,8 +30,18 @@ require('./db-phase38-numbering');
 require('./db-phase39-documents');
 require('./db-phase40-template-library');
 require('./db-phase41-online-meetings');
+require('./db-phase42-security-access');
 
 const app = express();
+
+// Render (and most PaaS hosts) put exactly one reverse proxy in front of
+// this app. Without this, req.ip resolves to THAT proxy's internal address,
+// not the visitor's real IP — which would make IP-based access control
+// (backend/services/accessControl.js) check the wrong address entirely.
+// '1' tells Express to trust exactly one hop's X-Forwarded-For entry (the
+// nearest one, which is the proxy Render itself controls) rather than
+// blindly trusting an arbitrary number of attacker-supplied hops.
+app.set('trust proxy', 1);
 
 // Universal lead capture — PUBLIC, called cross-origin from arbitrary customer
 // websites, so it needs its OWN permissive CORS and must be registered
@@ -87,6 +97,7 @@ app.use('/api/calendar', (req, res, next) => (
   req.path.startsWith('/callback/') ? next() : requireAuth(req, res, next)
 ), require('./routes/calendar'));
 app.use('/api/roles', requireAuth, require('./routes/roles'));
+app.use('/api/security', requireAuth, require('./routes/security'));
 app.use('/api/users', requireAuth, require('./routes/users'));
 app.use('/api/settings', requireAuth, require('./routes/settings'));
 app.use('/api/assistant', requireAuth, require('./routes/assistant'));
