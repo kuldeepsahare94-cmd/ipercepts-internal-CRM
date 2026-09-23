@@ -205,6 +205,18 @@ export const api = {
   updateRolePermissions: (id, permissions) => req('PUT', `/roles/${id}/permissions`, { permissions }),
   deleteRole: (id) => req('DELETE', `/roles/${id}`),
 
+  // security — IP & time-based access control
+  securityMyIp: () => req('GET', '/security/my-ip'),
+  securityPolicies: (params) => req('GET', '/security/policies' + qs(params)),
+  securityPolicy: (id) => req('GET', `/security/policies/${id}`),
+  createSecurityPolicy: (body) => req('POST', '/security/policies', body),
+  updateSecurityPolicy: (id, body) => req('PATCH', `/security/policies/${id}`, body),
+  deleteSecurityPolicy: (id) => req('DELETE', `/security/policies/${id}`),
+  securityMatrix: (params) => req('GET', '/security/matrix' + qs(params)),
+  securityUserDetail: (id) => req('GET', `/security/users/${id}/detail`),
+  securityDashboard: () => req('GET', '/security/dashboard'),
+  securityAuditLog: (params) => req('GET', '/security/audit-log' + qs(params)),
+
   listUsers: () => req('GET', '/users'),
   createUser: (body) => req('POST', '/users', body),
   updateUser: (id, body) => req('PUT', `/users/${id}`, body),
