@@ -43,6 +43,8 @@ function moduleFromPath(originalUrl) {
   if (parts[0] !== 'api') return null;
   if (parts[1] === 'records') return parts.length <= 4 ? (parts[2] || null) : null;
   if (parts.length > 3) return null;
+  // /api/subscriptions/preview is an action, not record #"preview".
+  if (parts.length === 3 && !/^\d+$/.test(parts[2])) return null;
   return parts[1] || null;
 }
 

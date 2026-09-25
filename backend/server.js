@@ -32,6 +32,7 @@ require('./db-phase40-template-library');
 require('./db-phase41-online-meetings');
 require('./db-phase42-security-access');
 require('./db-phase43-permission-completeness');
+require('./db-phase44-subscriptions-amc');
 
 const app = express();
 

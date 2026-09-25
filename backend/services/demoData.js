@@ -212,7 +212,9 @@ const WIPE_STATEMENTS = [
   ['sales_documents', "DELETE FROM sales_documents WHERE notes LIKE ?"],
   ['quotation_items', "DELETE FROM quotation_items WHERE quotation_id IN (SELECT id FROM quotations WHERE notes LIKE ?)"],
   ['quotations', "DELETE FROM quotations WHERE notes LIKE ?"],
+  ['payments', "DELETE FROM payments WHERE subscription_id IN (SELECT id FROM subscriptions WHERE notes LIKE ?)"],
   ['subscription_payments', "DELETE FROM subscription_payments WHERE subscription_id IN (SELECT id FROM subscriptions WHERE notes LIKE ?)"],
+  ['subscriptions (unlink)', "UPDATE subscriptions SET renewed_by_id=NULL, parent_subscription_id=NULL WHERE notes LIKE ?"],
   ['subscriptions', "DELETE FROM subscriptions WHERE notes LIKE ?"],
   ['ticket_replies', "DELETE FROM ticket_replies WHERE ticket_id IN (SELECT id FROM tickets WHERE description LIKE ?)"],
   ['tickets', "DELETE FROM tickets WHERE description LIKE ?"],
@@ -763,46 +765,61 @@ function seed() {
     add('payments');
   }
 
-  // --- subscriptions -------------------------------------------------------
+  // --- subscriptions / AMC ---------------------------------------------------
+  // Each has a term and a separate billing frequency; its instalments are
+  // generated into the Payments module by the same code the Subscriptions
+  // route uses, and the ones already due are marked received. Some are
+  // renewed once, so renewal history has something to show.
+  const billing = require('./subscriptionBilling');
   const insSub = db.prepare(`INSERT INTO subscriptions (subscription_number, account_id, contact_id,
     opportunity_id, product_id, plan, start_date, end_date, billing_cycle, quantity, unit_price,
     tax_percent, recurring_amount, currency, payment_terms, auto_renewal, renewal_date, status,
-    owner_id, notes, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 18, ?, 'INR', ?, ?, ?, ?, ?, ?, ?)`);
-  const insSubPayment = db.prepare(`INSERT INTO subscription_payments (subscription_id, payment_date,
-    amount, currency, payment_method, transaction_id, status, notes, created_at)
-    VALUES (?, ?, ?, 'INR', ?, ?, ?, ?, ?)`);
+    owner_id, notes, created_at, term_months, billing_frequency_months, subscription_value, renewal_number)
+    VALUES (@number, @account_id, @contact_id, NULL, @product_id, @plan, @start_date, @end_date, @billing_cycle,
+      @qty, @unit_price, 18, @recurring_amount, 'INR', @payment_terms, @auto_renewal, @renewal_date, @status,
+      @owner_id, @notes, @created_at, @term_months, @billing_frequency_months, @subscription_value, 0)`);
+  const today = day(0);
+  const markDuePaid = db.prepare(`UPDATE payments SET status='Paid', payment_date=due_date,
+      payment_mode=?, transaction_number=? WHERE subscription_id=? AND date(due_date) <= date(?) AND status='Pending'`);
 
   const recurring = products.filter((p) => p.recurring);
   for (let i = 0; i < VOLUME.subscriptions; i += 1) {
     const account = nextAccount();
     const product = recurring.length ? pick(recurring) : pick(products);
-    const start = int(30, HISTORY_DAYS);
-    const cycle = product.freq || pick(['Monthly', 'Annual']);
+    const term = pick([12, 12, 12, 6, 24]);
+    const freq = pick([1, 3, 3, 6, 12].filter((f) => term % f === 0));
     const qty = int(1, 4);
-    const amount = product.price * qty;
-    // A spread of renewal dates either side of today, so "renewals due in the
-    // next 30 days" is never an empty screen and neither is "expired".
-    const renewalIn = int(-90, 220);
-    const status = renewalIn < -30 ? pick(['Expired', 'Cancelled', 'Active'])
-      : pick(['Active', 'Active', 'Active', 'Active', 'Cancelled']);
-
-    const id = insSub.run(
-      `SUB-D${String(600 + i)}`, account.id,
-      account.contactIds.length ? account.contactIds[0] : null, null, product.id,
-      pick(['Starter', 'Professional', 'Enterprise']),
-      day(start), day(-renewalIn), cycle, qty, product.price, amount,
-      pick(['Net 15', 'Net 30', 'Advance']), chance(0.7) ? 1 : 0,
-      day(-renewalIn), status, pick(userIds), `${TAG} demo subscription`, stamp(start),
-    ).lastInsertRowid;
+    const value = product.price * qty * (term / 12) * (freq === 1 ? 12 : 1);
+    // Ends spread either side of today, so "renewals due in the next 30 days"
+    // is never an empty screen.
+    const endsIn = int(-60, 240);
+    const startDate = billing.addDays(billing.addMonths(day(-endsIn), -term), 1);
+    const values = billing.normalise({ start_date: startDate, term_months: term, billing_frequency_months: freq, subscription_value: value, status: 'Active' });
+    const status = endsIn < -30 ? pick(['Inactive', 'Active']) : pick(['Active', 'Active', 'Active', 'Active', 'Hold']);
+    const id = insSub.run({
+      number: `SUB-D${String(600 + i)}`, account_id: account.id,
+      contact_id: account.contactIds.length ? account.contactIds[0] : null, product_id: product.id,
+      plan: pick(['Starter', 'Professional', 'Enterprise']),
+      start_date: values.start_date, end_date: values.end_date, billing_cycle: values.billing_cycle,
+      qty, unit_price: product.price, recurring_amount: values.recurring_amount,
+      payment_terms: pick(['Net 15', 'Net 30', 'Advance']), auto_renewal: chance(0.7) ? 1 : 0,
+      renewal_date: values.renewal_date, status: 'Active', owner_id: pick(userIds), notes: `${TAG} demo subscription`,
+      created_at: values.start_date < today ? `${values.start_date} 10:00:00` : stamp(int(1, 20)),
+      term_months: term, billing_frequency_months: freq, subscription_value: values.subscription_value,
+    }).lastInsertRowid;
     add('subscriptions');
+    add('payments', billing.generateSchedule(id));
+    markDuePaid.run(pick(MODES), `SUB${900000 + i * 31}`, id, billing.addDays(today, -int(0, 20)));
+    if (status !== 'Active') db.prepare('UPDATE subscriptions SET status=? WHERE id=?').run(status, id);
 
-    // Billing history: one row per elapsed cycle, up to a sensible cap.
-    const every = cycle === 'Monthly' ? 30 : cycle === 'Quarterly' ? 90 : 365;
-    for (let d = start; d > 0 && (start - d) / every < 8; d -= every) {
-      insSubPayment.run(id, day(d), amount, pick(MODES), `SUB${900000 + i * 31 + d}`,
-        chance(0.9) ? 'Paid' : 'Pending', `${TAG} demo subscription billing`, stamp(d));
-      add('subscription_payments');
+    // Roughly one in four older cycles has already been renewed, on a
+    // different frequency, so the chain and its separate schedules show.
+    if (status === 'Active' && endsIn < 20 && chance(0.35)) {
+      const renewed = billing.renew(id, { billing_frequency_months: freq === 1 ? 3 : 1, notes: `${TAG} demo subscription` },
+        null, () => `SUB-D${String(600 + i)}-R1`);
+      add('subscriptions');
+      add('payments', db.prepare('SELECT COUNT(*) c FROM payments WHERE subscription_id=?').get(renewed.id).c);
+      markDuePaid.run(pick(MODES), `SUB${950000 + i * 31}`, renewed.id, billing.addDays(today, -int(5, 25)));
     }
   }
 

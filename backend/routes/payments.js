@@ -18,6 +18,7 @@ const SELECT_WITH_LINKS = `
     s.student_name, c.course_name, ad.admission_number,
     acc.account_name, ct.first_name || ' ' || COALESCE(ct.last_name,'') AS contact_name,
     o.opportunity_name, q.quote_number,
+    sub.subscription_number, pr.product_name, inv.doc_number AS invoice_number,
     COALESCE(s.student_name, acc.account_name, p.payer_name) AS payer_display_name
   FROM payments p
   LEFT JOIN students s ON s.id = p.student_id
@@ -27,15 +28,21 @@ const SELECT_WITH_LINKS = `
   LEFT JOIN contacts ct ON ct.id = p.contact_id
   LEFT JOIN opportunities o ON o.id = p.opportunity_id
   LEFT JOIN quotations q ON q.id = p.quotation_id
+  LEFT JOIN subscriptions sub ON sub.id = p.subscription_id
+  LEFT JOIN products pr ON pr.id = p.product_id
+  LEFT JOIN sales_documents inv ON inv.id = p.document_id
 `;
 
 function nextPaymentNumber() {
-  const count = db.prepare('SELECT COUNT(*) c FROM payments').get().c;
-  return `PAY-${String(count + 1).padStart(5, '0')}`;
+  // Highest existing number + 1: COUNT(*)+1 collides with an existing
+  // number as soon as any payment has been deleted.
+  const n = db.prepare(`SELECT COALESCE(MAX(CAST(SUBSTR(payment_number, 5) AS INTEGER)), 0) n
+    FROM payments WHERE payment_number LIKE 'PAY-%'`).get().n;
+  return `PAY-${String(n + 1).padStart(5, '0')}`;
 }
 
 router.get('/', requirePermission('payments', 'view'), (req, res) => {
-  const { status, account_id, opportunity_id, student_id, admission_id, q } = req.query;
+  const { status, account_id, opportunity_id, student_id, admission_id, subscription_id, q } = req.query;
   let sql = SELECT_WITH_LINKS + ' WHERE 1=1';
   const params = [];
   if (status) { sql += ' AND p.status = ?'; params.push(status); }
@@ -43,6 +50,7 @@ router.get('/', requirePermission('payments', 'view'), (req, res) => {
   if (opportunity_id) { sql += ' AND p.opportunity_id = ?'; params.push(opportunity_id); }
   if (student_id) { sql += ' AND p.student_id = ?'; params.push(student_id); }
   if (admission_id) { sql += ' AND p.admission_id = ?'; params.push(admission_id); }
+  if (subscription_id) { sql += ' AND p.subscription_id = ?'; params.push(subscription_id); }
   if (q) { sql += ' AND (s.student_name LIKE ? OR acc.account_name LIKE ? OR p.payer_name LIKE ? OR p.payment_number LIKE ? OR p.transaction_number LIKE ?)'; params.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`); }
   sql += ' ORDER BY p.created_at DESC';
   res.json(db.prepare(sql).all(...params));
@@ -84,11 +92,14 @@ router.put('/:id', requirePermission('payments', 'edit'), (req, res) => {
   const m = { ...existing, ...req.body };
   db.prepare(`
     UPDATE payments SET payment_date=?, amount=?, payment_mode=?, transaction_number=?, status=?, remarks=?,
-      payer_name=?, description=?
+      payer_name=?, description=?, due_date=?
     WHERE id=?
   `).run(
-    m.payment_date || (m.status === 'Paid' ? new Date().toISOString() : existing.payment_date),
-    m.amount, m.payment_mode, m.transaction_number, m.status, m.remarks, m.payer_name, m.description, req.params.id
+    // payment_date is the day money arrived. A scheduled instalment has none
+    // until it is paid, and marking it paid stamps today.
+    m.payment_date || (m.status === 'Paid' ? require('../services/dashboardMetrics').crmToday() : existing.payment_date),
+    m.amount, m.payment_mode, m.transaction_number, m.status, m.remarks, m.payer_name, m.description,
+    m.due_date ?? existing.due_date ?? null, req.params.id
   );
   const updated = db.prepare(SELECT_WITH_LINKS + ' WHERE p.id=?').get(req.params.id);
   if (m.status === 'Paid' && existing.status !== 'Paid') {

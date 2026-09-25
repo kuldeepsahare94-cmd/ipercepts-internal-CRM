@@ -28,6 +28,17 @@ function createActivityRouter(config) {
     if (related_record_id) { sql += ' AND related_record_id=?'; params.push(related_record_id); }
     if (status) { sql += ' AND status=?'; params.push(status); }
     if (q) { sql += ` AND (${config.titleColumn} LIKE ?)`; params.push(`%${q}%`); }
+    // An explicit id list (a dashboard drill-down) returns exactly those
+    // records, without the 200-row cap — otherwise an older overdue task
+    // could be counted on the dashboard and missing from the list it opens.
+    const ids = String(req.query.ids || '').split(',').map(Number).filter((n) => Number.isInteger(n) && n > 0);
+    if (req.query.ids !== undefined) {
+      if (!ids.length) return res.json([]);
+      sql += ` AND id IN (${ids.map(() => '?').join(',')})`;
+      params.push(...ids);
+      sql += ' ORDER BY created_at DESC';
+      return res.json(db.prepare(sql).all(...params));
+    }
     sql += ' ORDER BY created_at DESC LIMIT 200';
     res.json(db.prepare(sql).all(...params));
   });

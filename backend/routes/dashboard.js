@@ -2,298 +2,444 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const { requireAuth } = require('../middleware/auth');
-
+const M = require('../services/dashboardMetrics');
 
 // ============================================================================
-// Universal CRM dashboard (master prompt section 17). Kept in this same file
-// since it's additive to the existing dashboard route, not a replacement —
-// GET /api/dashboard still returns the original placement/education view
-// unchanged; this is a second, separate summary the frontend renders as a
-// second tab.
+// CRM dashboard.
+//
+// Every number returned here comes from a metric in services/dashboardMetrics
+// and is returned with the metric key and parameters that produced it. The
+// frontend turns that into a link to /records/<module>?drill=<key>&..., and
+// the destination calls GET /api/dashboard/drill with the same key and
+// parameters — the same query — to get the matching record ids and the
+// filters to show. A figure and the list it opens therefore always agree.
+//
+// Scope: ?owner=<userId> or ?team=<teamId> narrows every figure to that
+// person or team; ?period= sets the Performance / Top Performers period.
+// Each block is withheld (null) when the user has no view permission on the
+// module it reads, and the drill endpoint enforces the same check.
 // ============================================================================
-router.get('/crm', requireAuth, (req, res) => {
-  const today = new Date().toISOString().slice(0, 10);
-  const monthStart = today.slice(0, 7) + '-01';
-  const count = (sql, ...params) => db.prepare(sql).get(...params).c;
-  const sum = (sql, ...params) => db.prepare(sql).get(...params).s || 0;
 
-  const cards = {
-    total_leads: count('SELECT COUNT(*) c FROM leads'),
-    open_opportunities: count(`
-      SELECT COUNT(*) c FROM opportunities o LEFT JOIN module_pipeline_stages s ON s.id=o.stage_id
-      WHERE COALESCE(s.is_won,0)=0 AND COALESCE(s.is_lost,0)=0
-    `),
-    pipeline_value: sum(`
-      SELECT COALESCE(SUM(o.amount),0) s FROM opportunities o LEFT JOIN module_pipeline_stages st ON st.id=o.stage_id
-      WHERE COALESCE(st.is_won,0)=0 AND COALESCE(st.is_lost,0)=0
-    `),
-    weighted_pipeline: sum(`
-      SELECT COALESCE(SUM(o.amount * COALESCE(o.probability, st.probability, 0) / 100.0),0) s
-      FROM opportunities o LEFT JOIN module_pipeline_stages st ON st.id=o.stage_id
-      WHERE COALESCE(st.is_won,0)=0 AND COALESCE(st.is_lost,0)=0
-    `),
-    won_revenue_month: sum(`
-      SELECT COALESCE(SUM(o.amount),0) s FROM opportunities o JOIN module_pipeline_stages st ON st.id=o.stage_id
-      WHERE st.is_won=1 AND date(o.updated_at) >= date(?)
-    `, monthStart),
-    lost_this_month: count(`
-      SELECT COUNT(*) c FROM opportunities o JOIN module_pipeline_stages st ON st.id=o.stage_id
-      WHERE st.is_lost=1 AND date(o.updated_at) >= date(?)
-    `, monthStart),
-    open_tickets: count(`SELECT COUNT(*) c FROM tickets WHERE status NOT IN ('Resolved','Closed')`),
-    overdue_tasks: count(`SELECT COUNT(*) c FROM tasks WHERE status != 'Completed' AND due_date IS NOT NULL AND date(due_date) < date(?)`, today),
-    todays_calls: count(`SELECT COUNT(*) c FROM calls WHERE date(COALESCE(start_time, created_at)) = date(?)`, today),
-    todays_meetings: count(`SELECT COUNT(*) c FROM meetings WHERE date(COALESCE(start_datetime, created_at)) = date(?)`, today),
-    followups_due_today: count(`
-      SELECT COUNT(*) c FROM (
-        SELECT follow_up_date d FROM leads WHERE date(follow_up_date) = date(?)
-        UNION ALL SELECT next_followup d FROM contacts WHERE date(next_followup) = date(?)
-        UNION ALL SELECT expected_close_date d FROM opportunities WHERE date(expected_close_date) = date(?)
-      )
-    `, today, today, today),
-    followups_overdue: count(`
-      SELECT COUNT(*) c FROM (
-        SELECT follow_up_date d FROM leads WHERE follow_up_date IS NOT NULL AND date(follow_up_date) < date(?)
-        UNION ALL SELECT next_followup d FROM contacts WHERE next_followup IS NOT NULL AND date(next_followup) < date(?)
-        UNION ALL SELECT expected_close_date d FROM opportunities WHERE expected_close_date IS NOT NULL AND date(expected_close_date) < date(?)
-      )
-    `, today, today, today),
-  };
+const SCOPE_KEYS = ['owner', 'team'];
 
-  // MRR/ARR — normalize every billing cycle to a monthly figure so they're
-  // comparable, same logic as routes/subscriptions.js's /summary endpoint.
-  const activeSubs = db.prepare(`SELECT recurring_amount, billing_cycle FROM subscriptions WHERE status='Active'`).all();
-  const monthly = (s) => (s.billing_cycle === 'Yearly' ? s.recurring_amount / 12 : s.billing_cycle === 'Quarterly' ? s.recurring_amount / 3 : s.recurring_amount);
-  const mrr = activeSubs.reduce((total, s) => total + monthly(s), 0);
-  cards.mrr = mrr;
-  cards.arr = mrr * 12;
+function scopeParams(query) {
+  const out = {};
+  for (const k of SCOPE_KEYS) if (query[k]) out[k] = String(query[k]);
+  return out;
+}
 
-  const leads_by_source = db.prepare(`
-    SELECT COALESCE(source, 'Unknown') AS source, COUNT(*) c FROM leads GROUP BY source ORDER BY c DESC LIMIT 8
-  `).all();
+// Plain-date UTC timestamps ('2026-09-25 10:15:00') are made unambiguous
+// ISO strings so the browser shows the right relative time.
+function isoUtc(v) {
+  if (!v) return null;
+  const s = String(v);
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(s)) return `${s.replace(' ', 'T')}Z`;
+  return s;
+}
 
-  const opportunities_by_stage = db.prepare(`
-    SELECT s.name AS stage, s.color, COUNT(o.id) c, COALESCE(SUM(o.amount),0) total
-    FROM module_pipeline_stages s
-    JOIN module_pipelines p ON p.id = s.pipeline_id AND p.is_default = 1
-    JOIN modules m ON m.id = p.module_id AND m.api_name = 'opportunities'
-    LEFT JOIN opportunities o ON o.stage_id = s.id
-    GROUP BY s.id ORDER BY s.sort_order
-  `).all();
+// Where a record lives in the frontend.
+function recordPath(module, id) {
+  if (!id) return null;
+  if (module === 'leads') return `/leads/${id}`;
+  return `/records/${module}/${id}`;
+}
 
-  const revenue_by_month = db.prepare(`
-    SELECT strftime('%Y-%m', payment_date) month, COALESCE(SUM(amount),0) revenue
-    FROM subscription_payments WHERE status='Paid' AND payment_date IS NOT NULL
-    GROUP BY month ORDER BY month DESC LIMIT 6
-  `).all().reverse();
+const MODULE_LABEL = {
+  leads: 'Lead', accounts: 'Account', contacts: 'Contact', opportunities: 'Opportunity', tickets: 'Ticket',
+  quotations: 'Quotation', invoices: 'Invoice', subscriptions: 'Subscription', payments: 'Payment',
+};
 
-  // Global recent-activity feed — same five-table union as routes/activities.js,
-  // but without a related_record filter, so this is "what happened recently
-  // across the whole CRM" rather than one record's timeline.
-  const recentSources = [
-    { type: 'call', table: 'calls', titleCol: 'call_subject', dateCol: 'start_time' },
-    { type: 'meeting', table: 'meetings', titleCol: 'meeting_title', dateCol: 'start_datetime' },
-    { type: 'task', table: 'tasks', titleCol: 'task_title', dateCol: 'due_date' },
-    { type: 'note', table: 'notes', titleCol: 'body', dateCol: 'created_at' },
-    { type: 'email', table: 'emails', titleCol: 'subject', dateCol: 'sent_at' },
-  ];
-  let recent_activities = [];
-  for (const s of recentSources) {
-    const rows = db.prepare(`
-      SELECT id, ${s.titleCol} AS title, related_module, related_record_id, created_at,
-        COALESCE(${s.dateCol}, created_at) AS activity_date
-      FROM ${s.table} ORDER BY created_at DESC LIMIT 10
-    `).all();
-    rows.forEach((r) => recent_activities.push({ ...r, type: s.type }));
+// Name of a related record, for "Acme Corp · Opportunity" style labels.
+function relatedRecord(module, id) {
+  if (!module || !id) return null;
+  const sql = {
+    leads: "SELECT COALESCE(NULLIF(account_name,''), student_name) n FROM leads WHERE id=?",
+    accounts: 'SELECT account_name n FROM accounts WHERE id=?',
+    contacts: "SELECT TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) n FROM contacts WHERE id=?",
+    opportunities: 'SELECT opportunity_name n FROM opportunities WHERE id=?',
+    tickets: 'SELECT subject n FROM tickets WHERE id=?',
+    quotations: 'SELECT quote_number n FROM quotations WHERE id=?',
+    subscriptions: 'SELECT subscription_number n FROM subscriptions WHERE id=?',
+    invoices: 'SELECT doc_number n FROM sales_documents WHERE id=?',
+  }[module];
+  let name = null;
+  if (sql) {
+    try { name = db.prepare(sql).get(id)?.n || null; } catch { name = null; }
   }
-  recent_activities.sort((a, b) => new Date(b.activity_date) - new Date(a.activity_date));
-  recent_activities = recent_activities.slice(0, 8);
+  return { module, id, type: MODULE_LABEL[module] || module, name: name || `${MODULE_LABEL[module] || module} #${id}`, path: recordPath(module, id) };
+}
 
+router.get('/crm', requireAuth, (req, res) => {
+  const scope = scopeParams(req.query);
+  const ctx = M.context(scope);
+  const today = ctx.today;
+  const period = M.PERIODS[req.query.period] ? req.query.period : 'this_month';
+  const can = (module) => M.canView(req.user, module);
 
-  // ---- Executive additions (brief §8): answer "what is happening in my
-  // CRM today?" rather than only showing totals. All real data.
-
-  // Today's agenda — what actually needs doing, not a generic counter.
-  //
-  // Six rows each, deliberately. The dashboard shows five and a "view all"
-  // link, so six is enough to know a sixth exists without shipping a list
-  // nobody reads: with 66 tasks due, the old LIMIT 10 sent ten rows that
-  // stretched the card to ten rows tall and pushed everything below it off
-  // the screen. How many there really are is answered by agenda_counts,
-  // which costs three COUNT(*)s rather than the rows themselves.
-  const agenda = {
-    follow_ups: db.prepare(`
-      SELECT id, student_name AS title, mobile, status, follow_up_date
-      FROM leads WHERE date(follow_up_date) = date(?) ORDER BY student_name LIMIT 6`).all(today),
-    meetings: db.prepare(`
-      SELECT id, meeting_title AS title, start_datetime, related_module, related_record_id
-      FROM meetings WHERE date(COALESCE(start_datetime, created_at)) = date(?) ORDER BY start_datetime LIMIT 6`).all(today),
-    tasks_due: db.prepare(`
-      SELECT id, task_title AS title, priority, due_date, related_module, related_record_id
-      FROM tasks WHERE status != 'Completed' AND date(due_date) <= date(?) ORDER BY due_date LIMIT 6`).all(today),
+  // A metric result plus the exact link parameters that reproduce it.
+  const metric = (key, params = {}) => {
+    const def = M.METRICS[key];
+    if (!can(def.module)) return { metric: key, locked: true, module: def.module };
+    const r = M.evaluate(key, { ...scope, ...params }, ctx);
+    return { metric: key, module: def.module, path: def.path, params, count: r.count, sum: r.sum };
   };
 
-  const agenda_counts = {
-    follow_ups: count('SELECT COUNT(*) c FROM leads WHERE date(follow_up_date) = date(?)', today),
-    meetings: count('SELECT COUNT(*) c FROM meetings WHERE date(COALESCE(start_datetime, created_at)) = date(?)', today),
-    tasks_due: count(`SELECT COUNT(*) c FROM tasks WHERE status != 'Completed' AND date(due_date) <= date(?)`, today),
+  // ---- Needs Attention ------------------------------------------------------
+  const attention = {
+    tasks_overdue: metric('tasks_overdue'),
+    tickets_high_priority: metric('tickets_high_priority'),
+    quotes_expiring: metric('quotes_expiring'),
+    renewals_due: metric('renewals_due'),
+    renewals_overdue: metric('renewals_overdue'),
   };
 
-  // Win rate over closed deals only — including open deals in the
-  // denominator would understate it and drift as the pipeline grows.
-  const closed = db.prepare(`
-    SELECT COALESCE(SUM(CASE WHEN s.is_won=1 THEN 1 ELSE 0 END),0) won,
-           COALESCE(SUM(CASE WHEN s.is_lost=1 THEN 1 ELSE 0 END),0) lost
-    FROM opportunities o JOIN module_pipeline_stages s ON s.id=o.stage_id
-    WHERE s.is_won=1 OR s.is_lost=1`).get();
-  const closedTotal = (closed.won || 0) + (closed.lost || 0);
-  const performance = {
-    won: closed.won || 0,
-    lost: closed.lost || 0,
-    // null rather than 0 when nothing has closed — 0% would read as failure.
-    win_rate: closedTotal > 0 ? Math.round((closed.won / closedTotal) * 1000) / 10 : null,
-    avg_deal_size: closed.won > 0
-      ? Math.round(db.prepare(`SELECT COALESCE(AVG(o.amount),0) v FROM opportunities o
-          JOIN module_pipeline_stages s ON s.id=o.stage_id WHERE s.is_won=1`).get().v)
-      : 0,
+  // ---- Key metrics ----------------------------------------------------------
+  const tasksOverdue = attention.tasks_overdue;
+  const followupsUntasked = metric('followups_overdue_untasked');
+  const kpis = {
+    total_leads: metric('leads_total'),
+    leads_new_week: metric('leads_new_week'),
+    // Pipeline Value and Open Opportunities are the same record set: one
+    // count, one sum.
+    open_opportunities: metric('opps_open'),
+    won_this_month: metric('opps_won_this_month'),
+    overdue_actions: {
+      locked: tasksOverdue.locked && followupsUntasked.locked,
+      count: (tasksOverdue.count || 0) + (followupsUntasked.count || 0),
+      parts: [
+        { label: 'Overdue tasks', ...tasksOverdue },
+        { label: 'Overdue follow-ups', ...followupsUntasked },
+      ],
+      trend: can('tasks') ? overdueTaskTrend(today, ctx) : null,
+    },
   };
 
-  // ---- Money actually collected, not just money invoiced ------------------
-  // A pipeline figure is a forecast; this is the only block on the dashboard
-  // that reports cash. `balance_due` is maintained by documentPayments on
-  // every recorded payment, so it's authoritative rather than re-derived
-  // here. Cancelled invoices are excluded — an invoice that was voided was
-  // never owed, and counting it would inflate outstanding forever.
-  const collections = (() => {
-    const totals = db.prepare(`
-      SELECT COALESCE(SUM(grand_total), 0) invoiced,
-             COALESCE(SUM(amount_paid), 0) collected,
-             COALESCE(SUM(balance_due), 0) outstanding,
-             COUNT(*) c
-      FROM sales_documents
-      WHERE doc_type = 'invoice' AND COALESCE(status, '') != 'Cancelled'`).get();
-    const overdue = db.prepare(`
-      SELECT COALESCE(SUM(balance_due), 0) amount, COUNT(*) c
-      FROM sales_documents
-      WHERE doc_type = 'invoice' AND COALESCE(status, '') != 'Cancelled'
-        AND COALESCE(balance_due, 0) > 0
-        AND due_date IS NOT NULL AND date(due_date) < date(?)`).get(today);
-    return {
-      invoiced: totals.invoiced,
-      collected: totals.collected,
-      outstanding: totals.outstanding,
-      invoice_count: totals.c,
-      overdue_amount: overdue.amount,
-      overdue_count: overdue.c,
-      // Share of everything invoiced that has actually come in. null (not 0)
-      // when nothing has been invoiced at all, so the UI can say "no
-      // invoices yet" instead of showing a 0% that looks like a collections
-      // failure.
-      collected_pct: totals.invoiced > 0 ? Math.round((totals.collected / totals.invoiced) * 1000) / 10 : null,
+  // ---- Today's activities ---------------------------------------------------
+  const followupRows = (key, limit) => {
+    if (!can('leads')) return [];
+    const ids = M.evaluate(key, scope, ctx).ids;
+    if (!ids.length) return [];
+    return db.prepare(`SELECT id, student_name, account_name, mobile, status, follow_up_date FROM leads
+      WHERE id IN (${ids.map(() => '?').join(',')}) ORDER BY date(follow_up_date) ASC, student_name LIMIT ${limit}`).all(...ids)
+      .map((l) => ({
+        id: l.id, title: l.student_name, company: l.account_name || null, mobile: l.mobile, status: l.status,
+        follow_up_date: l.follow_up_date, path: recordPath('leads', l.id),
+        days_overdue: Math.max(0, Math.round((Date.parse(today) - Date.parse(String(l.follow_up_date).slice(0, 10))) / 86400000)),
+      }));
+  };
+  const overdueFollowups = followupRows('followups_overdue', 3);
+  const todayFollowups = followupRows('followups_today', 3);
+
+  const meetingsMetric = metric('meetings_today');
+  const meetingRows = (!meetingsMetric.locked && meetingsMetric.count)
+    ? db.prepare(`SELECT id, meeting_title, start_datetime, end_datetime, status, related_module, related_record_id FROM meetings
+        WHERE id IN (${M.evaluate('meetings_today', scope, ctx).ids.join(',')}) ORDER BY start_datetime LIMIT 50`).all()
+    : [];
+  // "Next few": what has not finished yet first, then the earliest.
+  const nowLocal = new Intl.DateTimeFormat('sv-SE', { timeZone: M.CRM_TIMEZONE, hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date());
+  const upcoming = meetingRows.filter((m) => String(m.end_datetime || m.start_datetime) >= nowLocal);
+  const nextMeetings = (upcoming.length ? upcoming : meetingRows).slice(0, 3).map((m) => ({
+    id: m.id, title: m.meeting_title, start: m.start_datetime, end: m.end_datetime, status: m.status,
+    path: recordPath('meetings', m.id), related: relatedRecord(m.related_module, m.related_record_id),
+    past: String(m.end_datetime || m.start_datetime) < nowLocal,
+  }));
+
+  const tasksToday = metric('tasks_today');
+  const taskRows = (!tasksToday.locked && tasksToday.count)
+    ? db.prepare(`SELECT id, task_title, priority, status, due_date, related_module, related_record_id FROM tasks
+        WHERE id IN (${M.evaluate('tasks_today', scope, ctx).ids.join(',')})
+        ORDER BY CASE priority WHEN 'High' THEN 0 WHEN 'Medium' THEN 1 WHEN 'Low' THEN 2 ELSE 3 END, id LIMIT 3`).all()
+      .map((t) => ({ id: t.id, title: t.task_title, priority: t.priority, status: t.status, path: recordPath('tasks', t.id), related: relatedRecord(t.related_module, t.related_record_id) }))
+    : [];
+
+  const today_activities = {
+    followups: {
+      today: { ...metric('followups_today'), items: todayFollowups },
+      overdue: { ...metric('followups_overdue'), items: overdueFollowups },
+    },
+    meetings: { ...meetingsMetric, items: nextMeetings },
+    tasks: { ...tasksToday, items: taskRows },
+  };
+
+  // ---- Performance (selected period) -----------------------------------------
+  const won = metric('opps_won', { period });
+  const lost = metric('opps_lost', { period });
+  const closed = metric('opps_closed', { period });
+  const performance = won.locked ? { locked: true } : {
+    period,
+    period_label: M.periodLabel(period, today),
+    won, lost, closed,
+    // Won ÷ (won + lost) for the same period and scope. null when nothing
+    // closed — 0% would read as failure.
+    win_rate: (won.count + lost.count) > 0 ? Math.round((won.count / (won.count + lost.count)) * 1000) / 10 : null,
+    // Won value ÷ won count, same records as Deals Won.
+    avg_deal_size: won.count > 0 ? Math.round(won.sum / won.count) : null,
+  };
+
+  // ---- Where things stand ---------------------------------------------------
+  let pipeline_by_stage = null;
+  if (can('opportunities')) {
+    const sc = M.scopeClause('opp', 'o', ctx.scope);
+    const rows = db.prepare(`
+      SELECT o.stage_id, st.name, st.color, st.sort_order, pl.is_default, COUNT(*) c, COALESCE(SUM(o.amount),0) total
+        FROM opportunities o
+        LEFT JOIN module_pipeline_stages st ON st.id = o.stage_id
+        LEFT JOIN module_pipelines pl ON pl.id = st.pipeline_id
+       WHERE ${M.OPEN_OPP}${sc.sql}
+       GROUP BY o.stage_id
+       ORDER BY COALESCE(pl.is_default,0) DESC, COALESCE(st.sort_order, 999), st.name`).all(...sc.args);
+    pipeline_by_stage = {
+      metric: 'opps_open', path: '/records/opportunities', params: {},
+      total: rows.reduce((s, r) => s + r.c, 0),
+      value: rows.reduce((s, r) => s + r.total, 0),
+      stages: rows.map((r) => ({
+        stage: r.stage_id == null ? 'none' : String(r.stage_id), name: r.name || 'No stage', color: r.color,
+        count: r.c, sum: r.total, metric: 'opps_open_stage', path: '/records/opportunities', params: { stage: r.stage_id == null ? 'none' : String(r.stage_id) },
+      })),
     };
-  })();
+  }
 
-  // ---- Who is actually closing business ------------------------------------
-  // Grouped by owner_id (not name) so two people who happen to share a
-  // display name stay separate rows, and ordered by value rather than count
-  // — five small wins is not the same contribution as one large one.
-  const leaderboard = db.prepare(`
-    SELECT COALESCE(u.full_name, u.username, 'Unassigned') AS name,
-           COUNT(o.id) AS won,
-           COALESCE(SUM(o.amount), 0) AS value
-    FROM opportunities o
-    JOIN module_pipeline_stages s ON s.id = o.stage_id AND s.is_won = 1
-    LEFT JOIN users u ON u.id = o.owner_id
-    GROUP BY o.owner_id
-    ORDER BY value DESC
-    LIMIT 5`).all();
+  let collections_trend = null;
+  if (can('payments')) {
+    const months = [];
+    for (let i = 5; i >= 0; i -= 1) months.push(M.shiftMonth(today.slice(0, 7), -i));
+    const points = months.map((ym) => {
+      const r = M.evaluate('payments_received_month', { ...scope, month: ym }, ctx);
+      return { month: ym, label: M.fmtMonth(ym), amount: r.sum, count: r.count, metric: 'payments_received_month', path: '/payments', params: { month: ym } };
+    });
+    const from = `${months[0]}-01`;
+    const to = M.monthBounds(months[months.length - 1])[1];
+    collections_trend = {
+      points, range_label: `${M.fmtMonth(months[0])} – ${M.fmtMonth(months[months.length - 1])}`,
+      metric: 'payments_received_range', path: '/payments', params: { from, to },
+      total: points.reduce((s, p) => s + p.amount, 0),
+    };
+  }
 
-  // ---- Support load, open tickets only -------------------------------------
-  // Ordered by how much they should worry someone rather than alphabetically,
-  // so Urgent is never buried under Low.
-  const PRIORITY_RANK = { Urgent: 0, High: 1, Medium: 2, Low: 3 };
-  const ticket_load = db.prepare(`
-    SELECT COALESCE(priority, 'Unset') AS priority, COUNT(*) c
-    FROM tickets WHERE status NOT IN ('Resolved', 'Closed')
-    GROUP BY priority`).all()
-    .sort((a, b) => (PRIORITY_RANK[a.priority] ?? 9) - (PRIORITY_RANK[b.priority] ?? 9));
+  let leads_by_source = null;
+  if (can('leads')) {
+    const sc = M.scopeClause('lead', 'l', ctx.scope);
+    const rows = db.prepare(`SELECT COALESCE(NULLIF(l.source,''), '__unknown') src, COUNT(*) c FROM leads l WHERE 1=1${sc.sql}
+      GROUP BY src ORDER BY c DESC, src`).all(...sc.args);
+    leads_by_source = {
+      metric: 'leads_total', path: '/leads', params: {},
+      total: rows.reduce((s, r) => s + r.c, 0),
+      source_count: rows.length,
+      top: rows.slice(0, 5).map((r) => ({
+        source: r.src === '__unknown' ? 'Not set' : r.src, count: r.c, metric: 'leads_source', path: '/leads', params: { source: r.src },
+      })),
+    };
+  }
 
-  // Things that need a human decision, ranked.
-  const attention = [];
-  const overdueFollowUps = count(`SELECT COUNT(*) c FROM leads
-    WHERE follow_up_date IS NOT NULL AND date(follow_up_date) < date(?)
-    AND status NOT IN ('Converted','Not Interested','Dropped')`, today);
-  if (overdueFollowUps) attention.push({ severity: 'high', text: `${overdueFollowUps} overdue lead follow-up(s)`, link: '/leads' });
-  const urgentTickets = count(`SELECT COUNT(*) c FROM tickets
-    WHERE status NOT IN ('Resolved','Closed') AND priority IN ('High','Urgent')`);
-  if (urgentTickets) attention.push({ severity: 'high', text: `${urgentTickets} high-priority ticket(s) open`, link: '/records/tickets' });
-  const overdueTasks = count(`SELECT COUNT(*) c FROM tasks
-    WHERE status != 'Completed' AND due_date IS NOT NULL AND date(due_date) < date(?)`, today);
-  if (overdueTasks) attention.push({ severity: 'high', text: `${overdueTasks} overdue task(s)`, link: '/records/tasks' });
-  const staleDeals = count(`SELECT COUNT(*) c FROM opportunities o
-    LEFT JOIN module_pipeline_stages s ON s.id=o.stage_id
-    WHERE COALESCE(s.is_won,0)=0 AND COALESCE(s.is_lost,0)=0
-    AND julianday('now') - julianday(o.updated_at) > 30`);
-  if (staleDeals) attention.push({ severity: 'medium', text: `${staleDeals} deal(s) with no movement in 30+ days`, link: '/records/opportunities' });
-  const expiringQuotes = count(`SELECT COUNT(*) c FROM quotations
-    WHERE status='Sent' AND valid_until IS NOT NULL AND date(valid_until) < date(?)`, today);
-  if (expiringQuotes) attention.push({ severity: 'medium', text: `${expiringQuotes} quotation(s) past their valid-until date`, link: '/records/quotations' });
-  const renewals = count(`SELECT COUNT(*) c FROM subscriptions
-    WHERE status='Active' AND renewal_date IS NOT NULL
-    AND julianday(renewal_date) - julianday('now') BETWEEN 0 AND 30`);
-  if (renewals) attention.push({ severity: 'medium', text: `${renewals} subscription(s) renewing within 30 days`, link: '/records/subscriptions' });
+  // ---- Money & workload -----------------------------------------------------
+  let collections = null;
+  if (can('invoices')) {
+    const invoiced = metric('invoices_basis');
+    const collected = can('payments') ? metric('payments_collected') : { locked: true };
+    const outstanding = metric('invoices_outstanding');
+    const overdue = metric('invoices_overdue');
+    collections = {
+      period_label: 'All time',
+      invoiced, collected, outstanding, overdue,
+      // Collected ÷ Total Invoiced, both on the same invoice basis.
+      collected_pct: invoiced.sum > 0 && !collected.locked ? Math.round((collected.sum / invoiced.sum) * 1000) / 10 : null,
+    };
+  }
 
+  let top_performers = null;
+  if (can('opportunities')) {
+    const r = M.periodRange(period, today);
+    const sc = M.scopeClause('opp', 'o', ctx.scope);
+    const args = [];
+    let where = 'st.is_won=1';
+    if (r) { where += ` AND ${M.localDate(M.CLOSE_DATE)} BETWEEN date(?) AND date(?)`; args.push(r[0], r[1]); }
+    const rows = db.prepare(`
+      SELECT o.owner_id, COALESCE(u.full_name, u.username, 'Unassigned') AS name, COUNT(o.id) won, COALESCE(SUM(o.amount),0) value
+        FROM opportunities o
+        JOIN module_pipeline_stages st ON st.id = o.stage_id
+        LEFT JOIN users u ON u.id = o.owner_id
+       WHERE ${where}${sc.sql}
+       GROUP BY o.owner_id ORDER BY value DESC, won DESC LIMIT 5`).all(...args, ...sc.args);
+    top_performers = {
+      period, period_label: M.periodLabel(period, today), basis: 'Won value',
+      rows: rows.map((x) => ({
+        rep: x.owner_id == null ? 'none' : String(x.owner_id), name: x.name, won: x.won, value: x.value,
+        metric: 'opps_won', path: '/records/opportunities', params: { period, rep: x.owner_id == null ? 'none' : String(x.owner_id) },
+      })),
+    };
+  }
 
-  // ---- Trend deltas (real, not decorative) -------------------------------
-  // Every figure here is computed by comparing actual record counts in two
-  // real date windows. Nothing is estimated or seeded — if a metric can't
-  // be compared honestly it returns null and the UI simply shows no delta
-  // rather than an invented one.
-  //
-  // "This week" = the last 7 days including today. "Last week" = the 7 days
-  // before that. A rolling window rather than calendar weeks, so the number
-  // means the same thing whichever day you look at it.
-  const trends = {
-    // Leads created in the last 7 days vs the 7 before.
-    total_leads: (() => {
-      const thisWeek = count(`SELECT COUNT(*) c FROM leads WHERE date(created_at) > date(?, '-7 day')`, today);
-      const lastWeek = count(`SELECT COUNT(*) c FROM leads WHERE date(created_at) > date(?, '-14 day') AND date(created_at) <= date(?, '-7 day')`, today, today);
-      return { current: thisWeek, previous: lastWeek, delta: thisWeek - lastWeek, unit: 'count', label: 'this week' };
-    })(),
+  let support = null;
+  if (can('tickets')) {
+    const open = metric('tickets_open');
+    const by = ['Urgent', 'High', 'Medium', 'Low'].map((p) => ({ priority: p, ...metric('tickets_open_priority', { priority: p }) }));
+    const unset = metric('tickets_open_priority', { priority: 'Unset' });
+    if (unset.count) by.push({ priority: 'Unset', ...unset });
+    support = { open, by_priority: by };
+  }
 
-    // Open opportunities now vs those that existed a week ago. Counted by
-    // creation date, since a deal created inside the window is genuinely
-    // new pipeline.
-    open_opportunities: (() => {
-      const created = count(`
-        SELECT COUNT(*) c FROM opportunities o LEFT JOIN module_pipeline_stages s ON s.id=o.stage_id
-        WHERE COALESCE(s.is_won,0)=0 AND COALESCE(s.is_lost,0)=0 AND date(o.created_at) > date(?, '-7 day')`, today);
-      const closed = count(`
-        SELECT COUNT(*) c FROM opportunities o JOIN module_pipeline_stages s ON s.id=o.stage_id
-        WHERE (s.is_won=1 OR s.is_lost=1) AND date(o.updated_at) > date(?, '-7 day')`, today);
-      return { current: created, previous: closed, delta: created - closed, unit: 'count', label: 'from last week' };
-    })(),
+  // ---- Today's CRM brief ------------------------------------------------------
+  // Rule-based insights computed from live records — no generated text, no
+  // invented figures. Each points at the metric that produced it.
+  const briefDefs = [
+    { key: 'followups_attention', noun: ['follow-up', 'follow-ups'], detail: 'Due today or overdue', action: 'Follow up', tone: 'purple' },
+    { key: 'opps_stalled', noun: ['opportunity', 'opportunities'], detail: `No activity in ${M.STALLED_DAYS}+ days`, action: 'Review', tone: 'blue' },
+    { key: 'quotes_expiring', noun: ['quotation', 'quotations'], detail: `Expired or expiring in ${M.QUOTE_WINDOW_DAYS} days`, action: 'Follow up', tone: 'amber' },
+    { key: 'renewals_due', noun: ['renewal', 'renewals'], detail: `Due in next ${M.RENEWAL_WINDOW_DAYS} days`, action: 'View renewals', tone: 'emerald' },
+    { key: 'payments_overdue', noun: ['payment', 'payments'], detail: 'Overdue — past due date', action: 'Collect', tone: 'rose' },
+  ];
+  const brief = briefDefs.map((b) => {
+    const m = metric(b.key);
+    return { ...b, ...m, label: m.count === 1 ? b.noun[0] : b.noun[1], samples: m.locked ? [] : samplesFor(b.key, { ...scope }, ctx) };
+  });
 
-    // Pipeline value added in the last 7 days, as a percentage of the value
-    // that already existed. Returns null when there was no prior pipeline —
-    // a percentage change from zero is meaningless, not "infinite growth".
-    pipeline_value: (() => {
-      const addedThisWeek = sum(`
-        SELECT COALESCE(SUM(o.amount),0) s FROM opportunities o LEFT JOIN module_pipeline_stages st ON st.id=o.stage_id
-        WHERE COALESCE(st.is_won,0)=0 AND COALESCE(st.is_lost,0)=0 AND date(o.created_at) > date(?, '-7 day')`, today);
-      const priorValue = sum(`
-        SELECT COALESCE(SUM(o.amount),0) s FROM opportunities o LEFT JOIN module_pipeline_stages st ON st.id=o.stage_id
-        WHERE COALESCE(st.is_won,0)=0 AND COALESCE(st.is_lost,0)=0 AND date(o.created_at) <= date(?, '-7 day')`, today);
-      if (priorValue <= 0) return null;
-      return { current: addedThisWeek, previous: priorValue, delta: Math.round((addedThisWeek / priorValue) * 1000) / 10, unit: 'percent', label: 'this week' };
-    })(),
+  // ---- Latest activity --------------------------------------------------------
+  const latest_activity = latestActivity(can, ctx);
+
+  // Scope choices for the header filter. Names only — no permission data.
+  const scope_options = {
+    users: db.prepare('SELECT id, COALESCE(full_name, username) name FROM users WHERE active=1 ORDER BY name').all(),
+    teams: db.prepare('SELECT id, name FROM teams WHERE COALESCE(active,1)=1 ORDER BY name').all(),
   };
+  const scopeInfo = ctx.scope ? { ...scope, label: ctx.scope.label } : null;
 
   res.json({
-    cards, trends, agenda, agenda_counts, performance, attention,
-    collections, leaderboard, ticket_load,
-    leads_by_source, opportunities_by_stage, revenue_by_month, recent_activities,
+    today, timezone: M.CRM_TIMEZONE, period, periods: M.PERIODS, scope: scopeInfo, scope_options,
+    brief, attention, kpis, today_activities, performance,
+    pipeline_by_stage, collections_trend, leads_by_source,
+    collections, top_performers, support, latest_activity,
+    windows: { renewal_days: M.RENEWAL_WINDOW_DAYS, quote_days: M.QUOTE_WINDOW_DAYS, stalled_days: M.STALLED_DAYS },
   });
+});
+
+// Overdue tasks now vs. seven days ago. "Overdue as of D" = due before D, and
+// created on or before D, and not completed before D. Down is good.
+function overdueTaskTrend(today, ctx) {
+  const d = M.addDays(today, -7);
+  const sc = M.scopeClause('task', 't', ctx.scope);
+  const now = M.evaluate('tasks_overdue', {}, ctx).count;
+  const then = db.prepare(`SELECT COUNT(*) c FROM tasks t
+    WHERE t.due_date IS NOT NULL AND date(t.due_date) < date(?) AND ${M.localDate('t.created_at')} <= date(?)
+      AND (COALESCE(t.status,'') != 'Completed' OR (t.completed_date IS NOT NULL AND date(t.completed_date) >= date(?)))${sc.sql}`)
+    .get(d, d, d, ...sc.args).c;
+  if (then === 0) return null;
+  return { current: now, previous: then, delta_pct: Math.round(((now - then) / then) * 1000) / 10, label: 'overdue tasks vs last week', good_when: 'down' };
+}
+
+// A few real records behind a brief insight, so Review Insights can link to
+// its sources.
+function samplesFor(key, params, ctx) {
+  const ids = M.evaluate(key, params, ctx).ids.slice(0, 3);
+  if (!ids.length) return [];
+  const list = ids.join(',');
+  const map = {
+    followups_attention: () => db.prepare(`SELECT id, student_name t, follow_up_date d FROM leads WHERE id IN (${list})`).all()
+      .map((r) => ({ id: r.id, title: r.t, meta: `Follow-up ${r.d ? String(r.d).slice(0, 10) : ''}`, path: recordPath('leads', r.id) })),
+    opps_stalled: () => db.prepare(`SELECT id, opportunity_name t, amount FROM opportunities WHERE id IN (${list})`).all()
+      .map((r) => ({ id: r.id, title: r.t, meta: `₹${Number(r.amount || 0).toLocaleString('en-IN')}`, path: recordPath('opportunities', r.id) })),
+    quotes_expiring: () => db.prepare(`SELECT id, quote_number t, valid_until d FROM quotations WHERE id IN (${list})`).all()
+      .map((r) => ({ id: r.id, title: r.t, meta: `Valid until ${r.d || '—'}`, path: recordPath('quotations', r.id) })),
+    renewals_due: () => db.prepare(`SELECT s.id, s.subscription_number t, a.account_name, s.renewal_date d FROM subscriptions s LEFT JOIN accounts a ON a.id=s.account_id WHERE s.id IN (${list})`).all()
+      .map((r) => ({ id: r.id, title: `${r.t}${r.account_name ? ` · ${r.account_name}` : ''}`, meta: `Renews ${r.d || '—'}`, path: recordPath('subscriptions', r.id) })),
+    payments_overdue: () => db.prepare(`SELECT id, payment_number t, amount, due_date d FROM payments WHERE id IN (${list})`).all()
+      .map((r) => ({ id: r.id, title: r.t, meta: `₹${Number(r.amount || 0).toLocaleString('en-IN')} due ${r.d || '—'}`, path: recordPath('payments', r.id) })),
+  };
+  return map[key] ? map[key]() : [];
+}
+
+// Recent calls, meetings, tasks, notes, quotations, payments, leads, tickets
+// and subscriptions, newest first. Each row links to its own record and,
+// separately, to the record it relates to.
+function latestActivity(can, ctx) {
+  const rows = [];
+  const push = (module, list) => list.forEach((r) => rows.push(r));
+  const scoped = (kind, alias) => M.scopeClause(kind, alias, ctx.scope);
+  const LIMIT = 10;
+  if (can('calls')) {
+    const sc = scoped('call', 'c');
+    push('calls', db.prepare(`SELECT c.id, c.call_subject title, c.related_module rm, c.related_record_id rid, c.created_at at FROM calls c WHERE 1=1${sc.sql} ORDER BY c.created_at DESC LIMIT ${LIMIT}`).all(...sc.args)
+      .map((r) => ({ type: 'call', label: 'Call logged', ...r })));
+  }
+  if (can('meetings')) {
+    const sc = scoped('meeting', 'm');
+    push('meetings', db.prepare(`SELECT m.id, m.meeting_title title, m.related_module rm, m.related_record_id rid, m.created_at at FROM meetings m WHERE 1=1${sc.sql} ORDER BY m.created_at DESC LIMIT ${LIMIT}`).all(...sc.args)
+      .map((r) => ({ type: 'meeting', label: 'Meeting scheduled', ...r })));
+  }
+  if (can('tasks')) {
+    const sc = scoped('task', 't');
+    push('tasks', db.prepare(`SELECT t.id, t.task_title title, t.related_module rm, t.related_record_id rid,
+        CASE WHEN t.status='Completed' THEN COALESCE(t.updated_at, t.created_at) ELSE t.created_at END at, t.status
+        FROM tasks t WHERE 1=1${sc.sql} ORDER BY at DESC LIMIT ${LIMIT}`).all(...sc.args)
+      .map((r) => ({ type: 'task', label: r.status === 'Completed' ? 'Task completed' : 'Task created', ...r })));
+  }
+  if (can('notes')) {
+    const sc = scoped('note', 'n');
+    push('notes', db.prepare(`SELECT n.id, COALESCE(NULLIF(n.title,''), SUBSTR(n.body,1,80)) title, n.related_module rm, n.related_record_id rid, n.created_at at FROM notes n WHERE 1=1${sc.sql} ORDER BY n.created_at DESC LIMIT ${LIMIT}`).all(...sc.args)
+      .map((r) => ({ type: 'note', label: 'Note added', ...r })));
+  }
+  if (can('quotations')) {
+    const sc = scoped('quote', 'q');
+    push('quotations', db.prepare(`SELECT q.id, q.quote_number title, q.status, CASE WHEN q.opportunity_id IS NOT NULL THEN 'opportunities' WHEN q.account_id IS NOT NULL THEN 'accounts' END rm,
+        COALESCE(q.opportunity_id, q.account_id) rid, COALESCE(q.sent_at, q.created_at) at FROM quotations q WHERE 1=1${sc.sql} ORDER BY at DESC LIMIT ${LIMIT}`).all(...sc.args)
+      .map((r) => ({ type: 'quote', label: r.status === 'Sent' ? 'Quotation shared' : `Quotation ${String(r.status || 'created').toLowerCase()}`, ...r })));
+  }
+  if (can('payments')) {
+    const sc = scoped('payment', 'p');
+    push('payments', db.prepare(`SELECT p.id, p.payment_number, p.amount,
+        CASE WHEN p.subscription_id IS NOT NULL THEN 'subscriptions' WHEN p.document_id IS NOT NULL THEN 'invoices' WHEN p.account_id IS NOT NULL THEN 'accounts' END rm,
+        COALESCE(p.subscription_id, p.document_id, p.account_id) rid, COALESCE(p.payment_date, p.created_at) at
+        FROM payments p WHERE p.status IN ('Paid','Partial') AND p.payment_date IS NOT NULL${sc.sql} ORDER BY at DESC LIMIT ${LIMIT}`).all(...sc.args)
+      .map((r) => ({ type: 'payment', label: 'Payment received', ...r, title: `${r.payment_number} · ₹${Number(r.amount || 0).toLocaleString('en-IN')}` })));
+  }
+  if (can('leads')) {
+    const sc = scoped('lead', 'l');
+    push('leads', db.prepare(`SELECT l.id, l.student_name title, l.created_at at FROM leads l WHERE 1=1${sc.sql} ORDER BY l.created_at DESC LIMIT ${LIMIT}`).all(...sc.args)
+      .map((r) => ({ type: 'lead', label: 'New lead created', ...r })));
+  }
+  if (can('tickets')) {
+    const sc = scoped('ticket', 'tk');
+    push('tickets', db.prepare(`SELECT tk.id, tk.subject title, 'accounts' rm, tk.account_id rid, tk.created_at at FROM tickets tk WHERE 1=1${sc.sql} ORDER BY tk.created_at DESC LIMIT ${LIMIT}`).all(...sc.args)
+      .map((r) => ({ type: 'ticket', label: 'Ticket opened', ...r })));
+  }
+  if (can('subscriptions')) {
+    const sc = scoped('sub', 's');
+    push('subscriptions', db.prepare(`SELECT s.id, s.subscription_number title, 'accounts' rm, s.account_id rid, s.renewal_number, s.created_at at FROM subscriptions s WHERE 1=1${sc.sql} ORDER BY s.created_at DESC LIMIT ${LIMIT}`).all(...sc.args)
+      .map((r) => ({ type: 'subscription', label: r.renewal_number > 0 ? `Subscription renewed (#${r.renewal_number})` : 'Subscription started', ...r })));
+  }
+  const MODULE_OF = { call: 'calls', meeting: 'meetings', task: 'tasks', note: 'notes', quote: 'quotations', payment: 'payments', lead: 'leads', ticket: 'tickets', subscription: 'subscriptions' };
+  const at = (v) => Date.parse(isoUtc(v)) || 0;
+  return rows
+    .sort((a, b) => at(b.at) - at(a.at))
+    .slice(0, 10)
+    .map((r) => ({
+      type: r.type, id: r.id, label: r.label, title: r.title || 'Untitled', at: isoUtc(r.at),
+      path: recordPath(MODULE_OF[r.type], r.id),
+      related: r.rm && r.rid && can(r.rm) ? relatedRecord(r.rm, r.rid) : null,
+    }));
+}
+
+// ---------------------------------------------------------------------------
+// Drill-down: the records behind one dashboard figure.
+//   GET /api/dashboard/drill?metric=tasks_overdue&owner=3
+// Returns the metric's module, list route, the filters in words, and the
+// matching record ids. Same permission as the module's own list.
+// ---------------------------------------------------------------------------
+router.get('/drill', requireAuth, (req, res) => {
+  const key = String(req.query.metric || '');
+  const def = M.METRICS[key];
+  if (!def) return res.status(400).json({ error: `Unknown dashboard metric "${key}"` });
+  if (!M.canView(req.user, def.module)) {
+    return res.status(403).json({ error: `You don't have view access to ${def.module}` });
+  }
+  const params = {};
+  for (const k of ['owner', 'team', ...(def.params || [])]) if (req.query[k]) params[k] = String(req.query[k]);
+  try {
+    const ctx = M.context(params);
+    const r = M.evaluate(key, params, ctx);
+    res.json({ ...M.describe(key, params, ctx), params, ids: r.ids, count: r.count, sum: r.sum });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
 });
 
 module.exports = router;
