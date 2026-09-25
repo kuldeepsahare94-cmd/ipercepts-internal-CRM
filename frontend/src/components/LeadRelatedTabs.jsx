@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Paperclip, Download, PhoneCall, Calendar, CheckSquare, TrendingUp } from 'lucide-react';
+import { Paperclip, Download, PhoneCall, CheckSquare, TrendingUp } from 'lucide-react';
 import { api } from '../api';
+import MeetingCard from './MeetingCard';
 
 /* ---------------------------------------------------------------------------
    These are REAL tables, not invented ones. calls/meetings/tasks/notes/
@@ -49,25 +50,26 @@ export function CallsTab({ leadId }) {
   );
 }
 
-export function MeetingsTab({ leadId }) {
+// `refreshKey` changes when a meeting is booked from this page, so the tab
+// shows it without a page reload. Meetings are the one relation here you can
+// create from the tab itself.
+export function MeetingsTab({ leadId, refreshKey = 0 }) {
   const [rows, setRows] = useState(null);
   useEffect(() => {
+    let cancelled = false;
     api.universalList(tableModule('meetings'), { related_module: 'leads', related_record_id: leadId })
-      .then(setRows).catch(() => setRows([]));
-  }, [leadId]);
+      .then((r) => { if (!cancelled) setRows(r); })
+      .catch(() => { if (!cancelled) setRows([]); });
+    return () => { cancelled = true; };
+  }, [leadId, refreshKey]);
   if (rows === null) return <p className="t-meta">Loading…</p>;
   if (rows.length === 0) return <p className="t-meta py-3">No meetings scheduled with this lead yet.</p>;
+  // Sorted soonest-first: a meetings tab is read to answer "when am I next
+  // speaking to them", and the API returns creation order.
+  const sorted = [...rows].sort((a, b) => String(b.start_datetime || '').localeCompare(String(a.start_datetime || '')));
   return (
     <div className="space-y-2">
-      {rows.map((m) => (
-        <div key={m.id} className="flex items-start gap-3 text-sm border-l-2 border-line pl-3 py-1">
-          <Calendar className="w-3.5 h-3.5 text-[var(--color-brand)] mt-0.5 shrink-0" />
-          <div className="min-w-0 flex-1">
-            <div className="text-ink font-medium">{m.meeting_title}</div>
-            <div className="t-meta">{String(m.start_datetime || m.created_at || '').slice(0, 16)} · {m.status || 'Scheduled'}</div>
-          </div>
-        </div>
-      ))}
+      {sorted.map((m) => <MeetingCard key={m.id} meeting={m} />)}
     </div>
   );
 }

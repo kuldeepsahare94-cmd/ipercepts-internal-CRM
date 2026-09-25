@@ -9,6 +9,8 @@ import { getFieldValue, formatFieldValue, renderFieldValue, FieldInput, recordTi
 
 import { computeFollowupStatus, findFollowupField } from './followupUtils';
 import AddRelatedModal, { canCreateRelation, relationTargetModule } from './AddRelatedModal';
+import ScheduleMeetingModal from '../../components/ScheduleMeetingModal';
+import MeetingCard from '../../components/MeetingCard';
 import WhatsAppTemplateModal from '../../components/WhatsAppTemplateModal';
 import { accentFor } from '../../theme/moduleAccents';
 import { avatarGradientFor, initialsOf } from '../../theme/avatarColors';
@@ -597,6 +599,7 @@ export default function UniversalDetail() {
   const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState('overview');
   const [addingRelation, setAddingRelation] = useState(null);
+  const [schedulingMeeting, setSchedulingMeeting] = useState(false);
   const [waOpen, setWaOpen] = useState(false);
   const [acctScore, setAcctScore] = useState(null);
   const [disposing, setDisposing] = useState(false);
@@ -649,10 +652,6 @@ export default function UniversalDetail() {
       .filter(([, v]) => v.length === 0 || typeof v[0] === 'object');
   }, [record]);
 
-  if (loading) return <div className="py-8 t-meta">Loading…</div>;
-  if (error) return <div className="py-8 text-sm" style={{ color: "var(--color-danger)" }}>{error}</div>;
-  if (!module || !record) return null;
-
   const startEdit = () => {
     const initial = {};
     editFields.forEach((f) => { initial[f.api_name] = getFieldValue(record, f); });
@@ -664,6 +663,14 @@ export default function UniversalDetail() {
   // ?edit=1 rather than duplicating the edit form on that page — this is
   // the only place that form exists. Fires once, as soon as the record and
   // its editable fields are actually ready to populate the form from.
+  //
+  // THESE TWO HOOKS MUST STAY ABOVE THE EARLY RETURNS BELOW. They used to sit
+  // under them, which meant the first render (loading) ran fewer hooks than
+  // the second (loaded) — React's "Rendered more hooks than during the
+  // previous render", which unmounts the page to the error boundary. That is
+  // the "Something went wrong" screen on every account, contact, deal and
+  // ticket record: guaranteed, every time, and cleared by a reload only
+  // because a reload re-runs the same sequence from scratch.
   const [searchParams, setSearchParams] = useSearchParams();
   useEffect(() => {
     if (searchParams.get('edit') === '1' && record && editFields.length && !editing && can(module?.api_name, 'edit')) {
@@ -673,6 +680,10 @@ export default function UniversalDetail() {
       setSearchParams(next, { replace: true });
     }
   }, [searchParams, record, editFields, editing]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (loading) return <div className="py-8 t-meta">Loading…</div>;
+  if (error) return <div className="py-8 text-sm" style={{ color: "var(--color-danger)" }}>{error}</div>;
+  if (!module || !record) return null;
 
   const save = async () => {
     setSaving(true);
@@ -975,7 +986,9 @@ export default function UniversalDetail() {
             run: () => setDisposing(true) },
           canCreateRelation('meetings', module.api_name) && can('meetings', 'create')
             && { key: 'meeting', label: 'Meeting', icon: CalendarPlus, from: '#6EE7B7', to: '#047857',
-              run: () => setAddingRelation('meetings') },
+              // Not setAddingRelation('meetings'): that writes a meetings row
+              // without going near the calendar, so the slot never blocked.
+              run: () => setSchedulingMeeting(true) },
           canCreateRelation('tasks', module.api_name) && can('tasks', 'create')
             && { key: 'task', label: 'Task', icon: CheckSquare, from: '#FCD34D', to: '#B45309',
               run: () => setAddingRelation('tasks') },
@@ -1094,11 +1107,27 @@ export default function UniversalDetail() {
         <div key={key} className="mt-5">
           {canCreateRelation(key, module.api_name) && can(relationTargetModule(key), 'create') && (
             <div className="flex justify-end mb-2">
-              <button onClick={() => setAddingRelation(key)} className="btn btn-primary">
+              <button onClick={() => (key === 'meetings' ? setSchedulingMeeting(true) : setAddingRelation(key))}
+                className="btn btn-primary">
                 + Add {key.replace(/_/g, ' ').replace(/s$/, '')}
               </button>
             </div>
           )}
+          {/* Meetings get cards rather than a generic column table: a meeting
+              is read for when it is and whether it already happened, which a
+              row of raw column values answers badly. Same component the lead's
+              Meetings tab renders, so the two match by construction. */}
+          {key === 'meetings' ? (
+            rows.length === 0
+              ? <div className="card py-8 text-center text-slate-400 text-sm shadow-sm">No meetings yet.</div>
+              : (
+                <div className="space-y-2">
+                  {[...rows]
+                    .sort((a, b) => String(b.start_datetime || '').localeCompare(String(a.start_datetime || '')))
+                    .map((m) => <MeetingCard key={m.id} meeting={m} />)}
+                </div>
+              )
+          ) : (
           <div className="card overflow-hidden overflow-x-auto shadow-sm">
           {rows.length === 0 ? (
             <div className="py-8 text-center text-slate-400 text-sm capitalize">No {key.replace(/_/g, ' ')} yet.</div>
@@ -1143,6 +1172,7 @@ export default function UniversalDetail() {
             </table>
           )}
           </div>
+          )}
         </div>
       ))}
 
@@ -1166,6 +1196,16 @@ export default function UniversalDetail() {
           parentId={id} parentLabel={title}
           onClose={() => setAddingRelation(null)}
           onCreated={() => { setAddingRelation(null); load(); }} />
+      )}
+
+      {/* One meeting form for the whole CRM. "Relates to" arrives filled in
+          with this record; everything else is the calendar's own form. */}
+      {schedulingMeeting && (
+        <ScheduleMeetingModal
+          relatedTo={{ module: module.api_name, id: Number(id), name: title,
+            secondary: record.email || record.phone || '' }}
+          onClose={() => setSchedulingMeeting(false)}
+          onSaved={() => { setSchedulingMeeting(false); setTab('meetings'); load(); }} />
       )}
 
       {tab === 'whatsapp' && showWhatsApp && <WhatsAppPanel moduleApiName={module.api_name} recordId={id} />}

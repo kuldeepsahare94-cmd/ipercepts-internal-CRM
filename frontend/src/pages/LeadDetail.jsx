@@ -11,6 +11,7 @@ import StatusBadge from '../components/StatusBadge';
 import DisposeLeadModal from '../components/DisposeLeadModal';
 import WhatsAppTemplateModal from '../components/WhatsAppTemplateModal';
 import AddRelatedModal from './universal/AddRelatedModal';
+import ScheduleMeetingModal from '../components/ScheduleMeetingModal';
 import { accentFor } from '../theme/moduleAccents';
 import { avatarGradientFor } from '../theme/avatarColors';
 import { CallsTab, MeetingsTab, TasksTab, DocumentsTab, DealsTab, NotesTab } from '../components/LeadRelatedTabs';
@@ -307,7 +308,13 @@ export default function LeadDetail() {
   const [lead, setLead] = useState(null);
   const [disposing, setDisposing] = useState(false);
   const [waOpen, setWaOpen] = useState(false);
-  const [addingRelation, setAddingRelation] = useState(null); // 'calls' | 'meetings' | 'tasks' | 'notes' | null
+  const [addingRelation, setAddingRelation] = useState(null); // 'calls' | 'tasks' | 'notes' | null
+  // Meetings deliberately do NOT go through addingRelation. The generic
+  // record-create modal writes a meetings row and stops there, which is why a
+  // meeting booked from a lead never showed as busy on the calendar. Booking
+  // one is the calendar's job, so it opens the calendar's own form.
+  const [schedulingMeeting, setSchedulingMeeting] = useState(false);
+  const [meetingsVersion, setMeetingsVersion] = useState(0);
   const [converting, setConverting] = useState(false);
   const [pageTab, setPageTab] = useState('overview');
   const [tab, setTab] = useState('note');
@@ -360,7 +367,9 @@ export default function LeadDetail() {
     if (key === 'call') return setDisposing(true);
     if (key === 'whatsapp') return setWaOpen(true);
     if (key === 'email') return lead.email && window.open(`mailto:${lead.email}`, '_self');
-    if (key === 'meeting') return setPageTab('meetings');
+    // "Schedule Meeting" now schedules one, rather than moving you to the tab
+    // where you then have to press a second button.
+    if (key === 'meeting') { setPageTab('meetings'); return setSchedulingMeeting(true); }
     if (key === 'task') return setPageTab('tasks');
     if (key === 'note') { setPageTab('activity'); setTab('note'); return; }
     if (key === 'document') return setPageTab('documents');
@@ -788,10 +797,10 @@ export default function LeadDetail() {
         <div className="card p-4">
           {can('meetings', 'create') && (
             <div className="flex justify-end mb-3">
-              <button onClick={() => setAddingRelation('meetings')} className="btn btn-primary text-xs">+ Schedule Meeting</button>
+              <button onClick={() => setSchedulingMeeting(true)} className="btn btn-primary text-xs">+ Schedule Meeting</button>
             </div>
           )}
-          <MeetingsTab leadId={id} />
+          <MeetingsTab leadId={id} refreshKey={meetingsVersion} />
         </div>
       )}
       {pageTab === 'tasks' && (
@@ -830,6 +839,21 @@ export default function LeadDetail() {
         <AddRelatedModal relationKey={addingRelation} parentModule="leads" parentId={id} parentLabel={lead.student_name}
           onClose={() => setAddingRelation(null)}
           onCreated={() => { setAddingRelation(null); load(); }} />
+      )}
+
+      {/* The same component the Calendar's "+ New meeting" renders — same
+          fields, same validation, same save path, so the slot blocks. The only
+          difference is that "Relates to" arrives filled in. */}
+      {schedulingMeeting && (
+        <ScheduleMeetingModal
+          relatedTo={{ module: 'leads', id: Number(id), name: lead.student_name, type_label: 'Lead', secondary: lead.email || lead.phone || '' }}
+          onClose={() => setSchedulingMeeting(false)}
+          onSaved={() => {
+            setSchedulingMeeting(false);
+            setMeetingsVersion((v) => v + 1);
+            setPageTab('meetings');
+            load();
+          }} />
       )}
 
       {converting && (

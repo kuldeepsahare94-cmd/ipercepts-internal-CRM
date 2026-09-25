@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Search, X, Check, ChevronDown } from 'lucide-react';
 import { api } from '../../api';
 import { requestLabel, subscribe } from './lookupCache';
+import DateTimePicker from '../../components/DateTimePicker';
 
 // Given a field's metadata and a record, read its current value.
 // - is_system fields on a table-backed module: read directly off the record
@@ -196,7 +197,12 @@ export function FieldInput({ field, value, onChange }) {
     return <input type="date" className={inputClass} value={value ? String(value).slice(0, 10) : ''} onChange={(e) => onChange(e.target.value)} />;
   }
   if (field.field_type === 'datetime') {
-    return <input type="datetime-local" className={inputClass} value={value ? String(value).slice(0, 16) : ''} onChange={(e) => onChange(e.target.value)} />;
+    // The app's own picker, not the browser's. Two reasons beyond looking
+    // consistent: the native control renders differently in every browser,
+    // and it silently showed BLANK for any stored value — SQLite writes
+    // "2026-09-25 18:10:00" and the native input only accepts a "T" there,
+    // so editing a record quietly dropped its existing time.
+    return <DateTimePicker value={value ?? ''} onChange={onChange} />;
   }
   if (field.field_type === 'email') return <input type="email" className={inputClass} value={value ?? ''} onChange={(e) => onChange(e.target.value)} />;
   if (field.field_type === 'url') return <input type="url" className={inputClass} value={value ?? ''} onChange={(e) => onChange(e.target.value)} />;

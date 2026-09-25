@@ -72,7 +72,18 @@ export default function AddRelatedModal({ relationKey, parentModule, parentId, p
       .then((f) => {
         if (!f || cancelled) return;
         // Hide the link field itself — it's set for the user.
-        setFields(f.filter((x) => x.show_in_create && x.api_name !== target.fk));
+        //
+        // For a POLYMORPHIC relation the link is two fields, not one, and
+        // `target.fk` is undefined — so this filter used to hide nothing and
+        // the form rendered an editable "Related Module" dropdown next to a
+        // "Related Record ID" number box. That is both the raw-id input this
+        // CRM is trying to get rid of, and a way to create a task from
+        // Divya Iyer's page and silently attach it to a different record —
+        // precisely the wrong-parent mistake this modal exists to prevent.
+        const hidden = target.polymorphic
+          ? ['related_module', 'related_record_id']
+          : [target.fk];
+        setFields(f.filter((x) => x.show_in_create && !hidden.includes(x.api_name)));
       })
       .catch((e) => setError(friendlyError(e, 'Could not load the form.').message))
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -85,23 +96,20 @@ export default function AddRelatedModal({ relationKey, parentModule, parentId, p
     try {
       const body = { ...form };
       if (target.polymorphic) {
-        body.related_module = parentModule;
+        // `related_module` is a TEXT column, so it needs the api_name string.
+        // Callers reasonably assume a prop called "parentModule" takes the
+        // module object, and passing one sends an object straight into a
+        // bound parameter — SQLite rejects it with "can only bind numbers,
+        // strings, bigints, buffers, and null" and the save fails with a 500.
+        // Accepting either shape costs one line and removes the trap.
+        body.related_module = typeof parentModule === 'string'
+          ? parentModule
+          : (parentModule && parentModule.api_name);
         body.related_record_id = parentId;
       } else {
         body[target.fk] = parentId;
       }
-      // Meetings are the one relation with a calendar behind them. Creating
-      // them through the generic record endpoint (api.universalCreate) would
-      // insert a plain row and stop there — no push to the user's connected
-      // Google/Microsoft calendar, no workflow fire for 'meetings' events.
-      // POST /calendar/events is the same endpoint the full Calendar page
-      // uses, so a meeting booked from a Lead/Account/Deal page behaves
-      // identically to one booked from the Calendar module itself.
-      if (relationKey === 'meetings') {
-        await api.createCalendarEvent(body);
-      } else {
-        await api.universalCreate(module, body);
-      }
+      await api.universalCreate(module, body);
       onCreated();
     } catch (err) {
       setError(friendlyError(err, 'Could not create the record.').message);
