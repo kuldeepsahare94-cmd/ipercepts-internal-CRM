@@ -10,6 +10,7 @@ import { usePermissions } from '../context/usePermissions';
 import StatusBadge from '../components/StatusBadge';
 import DisposeLeadModal from '../components/DisposeLeadModal';
 import WhatsAppTemplateModal from '../components/WhatsAppTemplateModal';
+import AddRelatedModal from './universal/AddRelatedModal';
 import { accentFor } from '../theme/moduleAccents';
 import { avatarGradientFor } from '../theme/avatarColors';
 import { CallsTab, MeetingsTab, TasksTab, DocumentsTab, DealsTab, NotesTab } from '../components/LeadRelatedTabs';
@@ -306,6 +307,7 @@ export default function LeadDetail() {
   const [lead, setLead] = useState(null);
   const [disposing, setDisposing] = useState(false);
   const [waOpen, setWaOpen] = useState(false);
+  const [addingRelation, setAddingRelation] = useState(null); // 'calls' | 'meetings' | 'tasks' | 'notes' | null
   const [converting, setConverting] = useState(false);
   const [pageTab, setPageTab] = useState('overview');
   const [tab, setTab] = useState('note');
@@ -772,12 +774,63 @@ export default function LeadDetail() {
         </div>
       )}
 
-      {pageTab === 'calls' && <div className="card p-4"><CallsTab leadId={id} /></div>}
-      {pageTab === 'meetings' && <div className="card p-4"><MeetingsTab leadId={id} /></div>}
-      {pageTab === 'tasks' && <div className="card p-4"><TasksTab leadId={id} /></div>}
+      {pageTab === 'calls' && (
+        <div className="card p-4">
+          {can('calls', 'create') && (
+            <div className="flex justify-end mb-3">
+              <button onClick={() => setAddingRelation('calls')} className="btn btn-primary text-xs">+ Log Call</button>
+            </div>
+          )}
+          <CallsTab leadId={id} />
+        </div>
+      )}
+      {pageTab === 'meetings' && (
+        <div className="card p-4">
+          {can('meetings', 'create') && (
+            <div className="flex justify-end mb-3">
+              <button onClick={() => setAddingRelation('meetings')} className="btn btn-primary text-xs">+ Schedule Meeting</button>
+            </div>
+          )}
+          <MeetingsTab leadId={id} />
+        </div>
+      )}
+      {pageTab === 'tasks' && (
+        <div className="card p-4">
+          {can('tasks', 'create') && (
+            <div className="flex justify-end mb-3">
+              <button onClick={() => setAddingRelation('tasks')} className="btn btn-primary text-xs">+ Add Task</button>
+            </div>
+          )}
+          <TasksTab leadId={id} />
+        </div>
+      )}
       {pageTab === 'deals' && <div className="card p-4"><DealsTab lead={lead} /></div>}
       {pageTab === 'documents' && <div className="card p-4"><DocumentsTab leadId={id} /></div>}
-      {pageTab === 'notes' && <div className="card p-4"><NotesTab leadId={id} /></div>}
+      {pageTab === 'notes' && (
+        <div className="card p-4">
+          {can('notes', 'create') && (
+            <div className="flex justify-end mb-3">
+              <button onClick={() => setAddingRelation('notes')} className="btn btn-primary text-xs">+ Add Note</button>
+            </div>
+          )}
+          <NotesTab leadId={id} />
+        </div>
+      )}
+
+      {addingRelation && (
+        // Reuses the exact same creation modal every other module already
+        // uses for these relations — canCreateRelation() treats calls,
+        // meetings, tasks and notes as "polymorphic" (allowed from any
+        // parent module), so this works for a Leads parent with no changes
+        // needed there. Deals and Documents are deliberately left out here:
+        // AddRelatedModal's whitelist only allows creating an Opportunity
+        // inline from an Account, and Documents isn't in that whitelist at
+        // all for any module — both look like intentional product
+        // decisions, not bugs, so this doesn't override them.
+        <AddRelatedModal relationKey={addingRelation} parentModule="leads" parentId={id} parentLabel={lead.student_name}
+          onClose={() => setAddingRelation(null)}
+          onCreated={() => { setAddingRelation(null); load(); }} />
+      )}
 
       {converting && (
         <ConvertLeadModal
@@ -793,7 +846,14 @@ export default function LeadDetail() {
       )}
 
       {waOpen && (
-        <WhatsAppTemplateModal lead={lead} senderName={lead.assigned_counselor}
+        // Was passing lead={lead} senderName={...} — WhatsAppTemplateModal
+        // actually takes a `subject` prop (see UniversalDetail.jsx, where
+        // every other module already calls it correctly). With no `subject`
+        // at all, its very first line (subject.phone) threw on open, which
+        // is the crash reported here — this shape matches what the modal
+        // has always expected.
+        <WhatsAppTemplateModal
+          subject={{ id: lead.id, module: 'leads', name: lead.student_name, phone: lead.mobile, interest: lead.product_interest || '', city: lead.city || '' }}
           onClose={() => setWaOpen(false)} />
       )}
     </div>

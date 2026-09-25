@@ -403,6 +403,7 @@ export default function UniversalList() {
                   <th className="py-3 px-4 t-meta font-semibold text-right"></th>
                 </>
               )}
+              {can(module.api_name, 'edit') && <th className="py-3 px-4 font-medium text-right w-10" />}
             </tr>
           </thead>
           <tbody>
@@ -477,6 +478,15 @@ export default function UniversalList() {
                         <span className="w-2 h-2 rounded-full shrink-0" style={{ background: s.color }} /> {s.label}
                       </span>
                     ); })()}
+                  </td>
+                )}
+                {can(module.api_name, 'edit') && (
+                  <td className="py-3 px-4 text-right">
+                    <button onClick={(e) => { e.stopPropagation(); navigate(`/records/${module.api_name}/${r.id}?edit=1`); }}
+                      title={`Edit this ${singularLabel.toLowerCase()}`}
+                      className="w-7 h-7 rounded-lg inline-flex items-center justify-center hover:bg-canvas">
+                      <Pencil className="w-3.5 h-3.5 text-slate-500" />
+                    </button>
                   </td>
                 )}
               </tr>

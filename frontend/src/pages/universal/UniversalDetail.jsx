@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { ArrowLeft, Trash2, Pencil, Send, MessageCircle, Sparkles, CheckSquare, FileText, Download, Paperclip, Upload, PhoneCall, CalendarPlus, StickyNote, Building2 } from 'lucide-react';
 import { api } from '../../api';
 import { usePermissions } from '../../context/usePermissions';
@@ -659,6 +659,20 @@ export default function UniversalDetail() {
     setForm(initial);
     setEditing(true);
   };
+
+  // The List view's row-level edit (pencil icon) deep-links here with
+  // ?edit=1 rather than duplicating the edit form on that page — this is
+  // the only place that form exists. Fires once, as soon as the record and
+  // its editable fields are actually ready to populate the form from.
+  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    if (searchParams.get('edit') === '1' && record && editFields.length && !editing && can(module?.api_name, 'edit')) {
+      startEdit();
+      const next = new URLSearchParams(searchParams);
+      next.delete('edit');
+      setSearchParams(next, { replace: true });
+    }
+  }, [searchParams, record, editFields, editing]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const save = async () => {
     setSaving(true);
