@@ -27,6 +27,12 @@ export function formatFieldValue(value, field) {
   if (field.field_type === 'date') return String(value).slice(0, 10);
   if (field.field_type === 'datetime') return String(value).replace('T', ' ').slice(0, 16);
   if (field.field_type === 'multiselect') return Array.isArray(value) ? value.join(', ') : value;
+  // A dropdown whose stored value differs from what it says (e.g. Billing
+  // Frequency stores 3 and reads "3 months") shows its label.
+  if (field.field_type === 'dropdown') {
+    const opt = parseOptions(field).find((o) => o && typeof o === 'object' && String(o.value) === String(value));
+    if (opt && opt.label) return String(opt.label);
+  }
   return String(value);
 }
 

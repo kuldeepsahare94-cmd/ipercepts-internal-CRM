@@ -57,6 +57,22 @@ export default function AssistantWidget() {
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, open]);
 
+  // Other screens (the Dashboard's "Ask AI") open this same assistant rather
+  // than a second one, optionally with a question to ask straight away.
+  const sendRef = useRef(null);
+  useEffect(() => {
+    const onOpen = async (e) => {
+      setOpen(true);
+      const prompt = e.detail?.prompt;
+      if (prompt && sendRef.current) sendRef.current(prompt);
+      else if (!conversationId) {
+        try { const convo = await api.createConversation(); setConversationId(convo.id); } catch { /* shown on first send */ }
+      }
+    };
+    window.addEventListener('icrm:open-assistant', onOpen);
+    return () => window.removeEventListener('icrm:open-assistant', onOpen);
+  }, [conversationId]);
+
   if (!can('assistant', 'view')) return null;
 
   const startConversation = async () => {
@@ -96,6 +112,8 @@ export default function AssistantWidget() {
       setLoading(false);
     }
   };
+
+  sendRef.current = send;
 
   const decide = async (approve) => {
     setDeciding(true);

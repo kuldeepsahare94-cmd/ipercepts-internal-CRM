@@ -1,530 +1,677 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+/*
+ * CRM Dashboard.
+ *
+ * Every figure on this page is a way into the records behind it. The backend
+ * returns each number together with the metric key and parameters that
+ * produced it; `drillHref()` turns that into a link to the module's existing
+ * list (`/records/tasks?drill=tasks_overdue&owner=3`), and that list asks the
+ * backend for the same metric's record ids. The number and the list cannot
+ * disagree because they are one query.
+ *
+ * Rules the page keeps:
+ *   - loading and failure are never drawn as zero;
+ *   - a figure the user may not see is shown locked, not as 0;
+ *   - a chart segment, legend row or data point opens exactly its own slice,
+ *     never the card or section around it;
+ *   - Resolve / Follow Up / Renew only open the existing workflow — nothing
+ *     here changes a record.
+ */
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  Users, TrendingUp, CalendarClock, IndianRupee, Target, CheckCircle2, Trophy,
-  AlertTriangle, Phone, PhoneCall, CheckSquare, Send, ArrowRight, Wallet,
-  LifeBuoy, Medal, ChevronRight, ArrowUpRight, ArrowDownRight, StickyNote, Mail,
+  AlertTriangle, ArrowRight, Bot, CalendarClock, CalendarDays, CheckSquare, ChevronDown, ChevronRight,
+  ClipboardCheck, FileText, IndianRupee, LifeBuoy, Lock, Medal, Phone, PhoneCall, RefreshCw, Repeat,
+  Sparkles, Sun, Target, Trophy, TrendingUp, UserPlus, Users, Wallet, X, Zap, ArrowDownRight, ArrowUpRight,
+  StickyNote, Ticket, Receipt, Info,
 } from 'lucide-react';
 import { api } from '../api';
+import { friendlyError } from '../components/ui';
+import { useAuth } from '../context/AuthContext';
+
 // recharts is heavy, so the charts load as a separate chunk after the rest
 // of the Dashboard has painted. See DashboardCharts.jsx.
 const StageDonut = lazy(() => import('./DashboardCharts').then((m) => ({ default: m.StageDonut })));
-const RevenueArea = lazy(() => import('./DashboardCharts').then((m) => ({ default: m.RevenueArea })));
+const CollectionsArea = lazy(() => import('./DashboardCharts').then((m) => ({ default: m.CollectionsArea })));
+// Same palette as the donut, without pulling recharts into this chunk.
+const STAGE_COLOURS = { New: '#3B82F6', Qualification: '#8B5CF6', Qualified: '#8B5CF6', 'Needs Analysis': '#F97316', Proposal: '#F59E0B', Negotiation: '#10B981', 'No stage': '#94A3B8' };
+const STAGE_FALLBACK = ['#3B82F6', '#8B5CF6', '#F97316', '#F59E0B', '#10B981', '#14B8A6', '#EC4899'];
+const stageColour = (s, i) => STAGE_COLOURS[s.name] || s.color || STAGE_FALLBACK[i % STAGE_FALLBACK.length];
 
-// Holds the chart's footprint while its chunk arrives, so the cards around
-// it don't jump once it renders.
-function ChartFrame({ height, children }) {
-  return (
-    <Suspense
-      fallback={(
-        <div
-          className="w-full rounded-xl bg-slate-100/70 dark:bg-slate-700/30 animate-pulse"
-          style={{ height }}
-          aria-busy="true"
-        />
-      )}
-    >
-      {children}
-    </Suspense>
-  );
-}
-
-import { friendlyError, Badge } from '../components/ui';
-import { useAuth } from '../context/AuthContext';
-
-const inr = (n) => `₹${Number(n || 0).toLocaleString('en-IN')}`;
-
-// Compact money for places where the full figure would wrap — ₹44.9L rather
-// than ₹44,90,543. Indian units (lakh/crore), because this is an Indian
-// product and "4.5M" is not how anyone here reads a number.
+const inr = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+// Compact money in Indian units (lakh/crore) for places the full figure
+// would wrap.
 function inrShort(n) {
   const v = Number(n || 0);
   if (v >= 10000000) return `₹${(v / 10000000).toFixed(2)}Cr`;
-  if (v >= 100000) return `₹${(v / 100000).toFixed(2)}L`;
+  if (v >= 100000) return `₹${(v / 100000).toFixed(v >= 1000000 ? 1 : 2)}L`;
   if (v >= 1000) return `₹${(v / 1000).toFixed(1)}K`;
   return `₹${Math.round(v)}`;
 }
 
-// "2h ago" / "Yesterday" / "12 Sep" — an activity feed without times reads
-// as a list of nouns rather than a history, which is what made the old one
-// feel arbitrary.
 function relativeTime(value) {
   if (!value) return '';
-  const then = new Date(String(value).replace(' ', 'T'));
+  const then = new Date(value);
   if (Number.isNaN(then.getTime())) return '';
   const mins = Math.round((Date.now() - then.getTime()) / 60000);
   if (mins < 1) return 'Just now';
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 60) return `${mins} min${mins === 1 ? '' : 's'} ago`;
   const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
+  if (hrs < 24) return `${hrs} hour${hrs === 1 ? '' : 's'} ago`;
   const days = Math.round(hrs / 24);
   if (days === 1) return 'Yesterday';
-  if (days < 7) return `${days}d ago`;
+  if (days < 7) return `${days} days ago`;
   return then.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
 }
+const hhmm = (s) => (s ? String(s).slice(11, 16) : '');
 
-// Counts a numeric KPI up from 0 on mount rather than popping in already at
-// its final value — a small thing, but it's the difference between a
-// dashboard that looks alive and one that looks like a printed report. Only
-// touches values that are actually plain numbers (or a rupee/plain string
-// wrapping one); anything else — "—", a percentage already formatted — is
-// shown as-is on the first render and never animated, since counting up
-// through text you can't parse would just flicker.
-function useCountUp(value, duration = 900) {
-  const [display, setDisplay] = useState(value);
-  const prev = useRef();
-  const frame = useRef();
-
-  useEffect(() => {
-    const match = typeof value === 'string' ? value.match(/^(₹?)([\d,]+(?:\.\d+)?)(%?)$/) : null;
-    const numeric = typeof value === 'number' ? value : (match ? Number(match[2].replace(/,/g, '')) : null);
-    if (numeric === null || Number.isNaN(numeric) || prev.current === value) { setDisplay(value); return; }
-    prev.current = value;
-    const prefix = match ? match[1] : '';
-    const suffix = match ? match[3] : '';
-    const decimals = (match && match[2].includes('.')) ? match[2].split('.')[1].length : 0;
-    const start = performance.now();
-    cancelAnimationFrame(frame.current);
-    const tick = (now) => {
-      const t = Math.min(1, (now - start) / duration);
-      const eased = 1 - (1 - t) ** 3; // ease-out cubic — fast start, gentle settle
-      const current = numeric * eased;
-      const formatted = decimals ? current.toFixed(decimals) : Math.round(current).toLocaleString('en-IN');
-      setDisplay(`${prefix}${formatted}${suffix}`);
-      if (t < 1) frame.current = requestAnimationFrame(tick);
-    };
-    frame.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame.current);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value]);
-
-  return display;
-}
-
-// ---------------------------------------------------------------------------
-// The accent set. Every colour on this page comes from here — each entry is
-// one accent from the palette with its own light surface, so "orange" always
-// means the same orange on the same tint wherever it appears.
-//
-// The icon chip is a LIGHT tint with a coloured glyph, not a saturated
-// gradient tile with a white glyph. Five gradient tiles in a row is the
-// single thing that made the old KPI strip read as consumer rather than
-// enterprise: it put the loudest element on the card next to the number it
-// was supposed to be supporting.
-// ---------------------------------------------------------------------------
 const COLORS = {
   purple:  { c: '#6C4FF7', soft: '#F0EDFF', rgb: '108, 79, 247' },
   blue:    { c: '#3B82F6', soft: '#EFF6FF', rgb: '59, 130, 246' },
   teal:    { c: '#14B8A6', soft: '#ECFDF9', rgb: '20, 184, 166' },
   emerald: { c: '#10B981', soft: '#ECFDF5', rgb: '16, 185, 129' },
   amber:   { c: '#F59E0B', soft: '#FFFBEB', rgb: '245, 158, 11' },
+  orange:  { c: '#F97316', soft: '#FFF7ED', rgb: '249, 115, 22' },
   rose:    { c: '#F43F5E', soft: '#FFF1F2', rgb: '244, 63, 94' },
-  violet:  { c: '#8B5CF6', soft: '#F5F3FF', rgb: '139, 92, 246' },
 };
-const TONE_TO_COLOR = { success: 'emerald', danger: 'rose', warning: 'amber', info: 'blue', special: 'purple', neutral: 'teal' };
+const PRIORITY_TONE = { Urgent: '#F43F5E', High: '#F97316', Medium: '#F59E0B', Low: '#3B82F6', Unset: '#94A3B8' };
 
-// Trend deltas as a tinted pill rather than loose coloured text — green on a
-// green surface for up, red on red for down. Same treatment everywhere a
-// delta appears.
-function TrendPill({ trend, sub }) {
-  if (!trend && !sub) return null;
-  if (!trend) return <span className="text-[11px] text-[var(--color-faint)]">{sub}</span>;
-  const up = trend.dir !== 'down';
+// ---------------------------------------------------------------------------
+// Links
+// ---------------------------------------------------------------------------
+const SCOPE_KEYS = ['owner', 'team', 'period'];
+
+// The list route for a metric, carrying the metric's own parameters and the
+// dashboard's scope and period (so the destination can show them and the
+// back link can restore them).
+function drillHref(m, ctx) {
+  if (!m || m.locked || !m.metric || !m.path) return null;
+  const p = new URLSearchParams({ drill: m.metric });
+  SCOPE_KEYS.forEach((k) => { if (ctx[k]) p.set(k, ctx[k]); });
+  Object.entries(m.params || {}).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') p.set(k, v); });
+  return `${m.path}?${p.toString()}`;
+}
+
+// Remember where the user was, so coming back from a list lands them at the
+// same place on the page.
+const RETURN_KEY = 'icrm.dashboard.return';
+function rememberScroll() {
+  try { sessionStorage.setItem(RETURN_KEY, String(window.scrollY)); } catch { /* storage unavailable */ }
+}
+
+function DLink({ to, children, className = '', style, label, ...rest }) {
+  if (!to) return <span className={className} style={style}>{children}</span>;
   return (
-    <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-1.5 py-px rounded-md"
-      style={{
-        color: up ? 'var(--color-success)' : 'var(--color-danger)',
-        background: up ? 'var(--color-success-soft)' : 'var(--color-danger-soft)',
-      }}>
-      {up ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
-      {trend.text}
+    <Link to={to} onClick={rememberScroll} className={`dash-link ${className}`} style={style} aria-label={label} {...rest}>
+      {children}
+    </Link>
+  );
+}
+
+function Locked({ small }) {
+  return (
+    <span className={`inline-flex items-center gap-1 ${small ? 'text-[11px]' : 'text-[12px]'}`} style={{ color: 'var(--color-faint)' }}
+      title="You don't have access to these records">
+      <Lock className="w-3 h-3" /> No access
     </span>
   );
 }
 
-function KpiCard({ label, value, sub, trend, icon: Icon, color, tone, to, index = 0 }) {
-  const p = color || COLORS[TONE_TO_COLOR[tone]] || COLORS.purple;
-  const animated = useCountUp(value);
-  const body = (
-    <div
-      className="dash-card dash-glow relative px-3.5 py-2.5 overflow-hidden h-full dash-enter group"
-      style={{ '--accent-rgb': p.rgb, '--stagger': `${index * 50}ms` }}
-    >
-      {/* The micro-glow: one very soft radial in the card's accent, at 10%,
-          with an explicit radius so it stays a highlight in the corner. Left
-          to default to farthest-corner it grew with the card and tinted the
-          whole surface, which is the opposite of "do not make it obvious". */}
-      <div aria-hidden="true" className="dash-kpi-wash absolute inset-0 pointer-events-none" />
-
-      <div className="relative flex items-start justify-between gap-2 mb-1.5">
-        <div className="w-[30px] h-[30px] rounded-[10px] flex items-center justify-center shrink-0"
-          style={{ background: p.soft, color: p.c }}>
-          {Icon && <Icon className="w-4 h-4" strokeWidth={2} />}
-        </div>
-        {/* Only drawn when the card actually goes somewhere, so a card that
-            can't be opened never advertises that it can. */}
-        {to && (
-          <ChevronRight className="w-4 h-4 shrink-0 transition-all group-hover:translate-x-0.5"
-            style={{ color: 'var(--color-disabled)' }} />
-        )}
-      </div>
-      <div className="relative text-[11.5px] font-medium leading-none" style={{ color: 'var(--color-muted)' }}>{label}</div>
-      <div className="dash-figure relative text-[22px] font-bold mt-1 leading-none tabular-nums" style={{ fontFamily: 'var(--font-display)' }}>
-        {animated}
-      </div>
-      {/* Rendered only when there is something to say. Every card in a given
-          row either has a delta or doesn't, so the row stays level without
-          reserving empty space on the cards that don't. */}
-      {(trend || sub) && (
-        <div className="relative mt-1.5 flex items-center">
-          <TrendPill trend={trend} sub={sub} />
+// A "View all" that fans out to several destinations — used where a section
+// spans more than one module, so no click is forced onto a generic page.
+function ViewAllMenu({ items, label = 'View all' }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const esc = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', close);
+    document.addEventListener('keydown', esc);
+    return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', esc); };
+  }, [open]);
+  const usable = items.filter((i) => i.to);
+  if (!usable.length) return null;
+  return (
+    <div className="relative dash-above" ref={ref}>
+      <button type="button" onClick={() => setOpen((o) => !o)} aria-haspopup="menu" aria-expanded={open}
+        className="dash-link text-[11.5px] font-semibold inline-flex items-center gap-0.5 px-1.5 py-0.5" style={{ color: 'var(--color-brand)' }}>
+        {label} <ChevronDown className="w-3.5 h-3.5" />
+      </button>
+      {open && (
+        <div role="menu" className="dash-menu absolute right-0 top-full mt-1 z-30 min-w-[230px] p-1.5">
+          {usable.map((i) => (
+            <Link key={i.label} role="menuitem" to={i.to} onClick={() => { rememberScroll(); setOpen(false); }}
+              className="dash-link flex items-center justify-between gap-3 px-2.5 py-2 text-[12.5px]" style={{ color: 'var(--color-ink)' }}>
+              <span>{i.label}</span>
+              {i.count !== undefined && <span className="tabular-nums font-semibold" style={{ color: 'var(--color-muted)' }}>{i.count}</span>}
+            </Link>
+          ))}
         </div>
       )}
     </div>
   );
-  return to ? <Link to={to} className="block h-full">{body}</Link> : body;
 }
 
-
-// Formats a backend trend object for display. Deliberately returns null
-// when the delta is zero or the backend couldn't compute an honest
-// comparison — an empty space says less-but-true, where "0%" implies a
-// measurement that didn't really happen.
-function formatTrend(trend) {
-  if (!trend || trend.delta === null || trend.delta === undefined) return null;
-  const d = trend.delta;
-  if (d === 0) return null;
-  const sign = d > 0 ? '+' : '';
-  const text = trend.unit === 'percent' ? `${sign}${d}% ${trend.label}` : `${sign}${d} ${trend.label}`;
-  return { dir: d > 0 ? 'up' : 'down', text };
+function ViewLink({ to, children = 'View all' }) {
+  if (!to) return null;
+  return (
+    <DLink to={to} className="dash-above text-[11.5px] font-semibold inline-flex items-center gap-0.5 px-1.5 py-0.5 shrink-0"
+      style={{ color: 'var(--color-brand)' }}>
+      {children} <ArrowRight className="w-3 h-3" />
+    </DLink>
+  );
 }
 
-// One section header pattern, used by every section without exception:
-// a 3×16px purple tick, then the title. Consistency here is most of what
-// makes a page scan as a system rather than a stack of panels.
 function SectionLabel({ children, action }) {
   return (
-    <div className="flex items-center justify-between gap-3 mt-5 mb-2.5">
-      <h2 className="text-[14px] font-bold flex items-center gap-2" style={{ color: 'var(--color-ink)' }}>
+    <div className="flex items-center justify-between gap-3 mt-6 mb-2.5 flex-wrap">
+      <h2 className="text-[15px] font-bold flex items-center gap-2" style={{ color: 'var(--color-ink)' }}>
         <span className="w-[3px] h-4 rounded-[3px] shrink-0" style={{ background: 'var(--color-brand)' }} />
         {children}
       </h2>
-      {action}
+      {action && <div className="flex items-center gap-2">{action}</div>}
     </div>
   );
 }
 
-// Shared shell for every panel that isn't a KPI: title row, optional
-// "view all", body, and — critically — a HEIGHT. Every list on this page
-// is capped rather than free-running, so a CRM with 66 tasks due renders
-// exactly as tall as one with 3. Without this the tallest list dictated
-// the height of its whole grid row, which is what made the momentum panel
-// stretch further down the page every time more records were added.
-function Panel({ title, subtitle, icon: Icon, accent = COLORS.purple, count, action, height, index = 0, children }) {
+function Panel({ title, subtitle, icon: Icon, accent = COLORS.purple, action, children, className = '', badge }) {
   return (
-    <div className="dash-card dash-glow relative overflow-hidden p-4 flex flex-col dash-enter"
-      style={{ '--accent-rgb': accent.rgb, '--stagger': `${index * 60}ms`, height }}>
-      <div className="flex items-center justify-between gap-2 shrink-0">
-        <h3 className="flex items-center gap-2 min-w-0 text-[13px] font-semibold" style={{ color: 'var(--color-ink)' }}>
+    <section className={`dash-card p-4 flex flex-col min-w-0 ${className}`} aria-label={title}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-start gap-2.5 min-w-0">
           {Icon && (
-            <span className="w-7 h-7 rounded-[9px] flex items-center justify-center shrink-0"
-              style={{ background: accent.soft, color: accent.c }}>
-              <Icon className="w-[15px] h-[15px]" strokeWidth={2} />
+            <span className="w-9 h-9 rounded-[10px] flex items-center justify-center shrink-0" style={{ background: accent.soft, color: accent.c }}>
+              <Icon className="w-[18px] h-[18px]" strokeWidth={2} />
             </span>
           )}
-          <span className="truncate">{title}</span>
-          {count > 0 && (
-            <span className="text-[11px] font-semibold px-1.5 py-0.5 rounded-md shrink-0 tabular-nums"
-              style={{ background: accent.soft, color: accent.c }}>{count}</span>
-          )}
-        </h3>
+          <div className="min-w-0">
+            <h3 className="text-[14px] font-semibold flex items-center gap-2 flex-wrap" style={{ color: 'var(--color-ink)' }}>{title}{badge}</h3>
+            {subtitle && <p className="text-[11px] mt-0.5" style={{ color: 'var(--color-muted)' }}>{subtitle}</p>}
+          </div>
+        </div>
         {action}
       </div>
-      {subtitle && <p className="text-[11px] mt-1 mb-2.5 shrink-0" style={{ color: 'var(--color-faint)' }}>{subtitle}</p>}
-      {!subtitle && <div className="h-2.5 shrink-0" />}
+      <div className="mt-3 flex-1 flex flex-col min-h-0">{children}</div>
+    </section>
+  );
+}
+
+function Empty({ children }) {
+  return (
+    <div className="flex-1 flex items-center justify-center text-center rounded-[10px] px-3 py-6 text-[12px]"
+      style={{ background: 'var(--color-surface-soft)', color: 'var(--color-muted)' }}>{children}</div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Header
+// ---------------------------------------------------------------------------
+function ScopeSelect({ data, ctx, onChange }) {
+  const value = ctx.owner ? `u:${ctx.owner}` : ctx.team ? `t:${ctx.team}` : '';
+  return (
+    <label className="inline-flex items-center gap-2 rounded-[10px] px-2.5 py-1.5 text-[12.5px] font-medium"
+      style={{ background: '#FFFFFF', border: '1px solid var(--color-line)', color: 'var(--color-ink)' }}>
+      <Users className="w-4 h-4" style={{ color: 'var(--color-brand)' }} />
+      <span className="sr-only">Scope</span>
+      <select value={value} onChange={(e) => onChange(e.target.value)} className="bg-transparent outline-none cursor-pointer pr-1"
+        aria-label="Show figures for">
+        <option value="">All teams</option>
+        {data.scope_options.teams.length > 0 && (
+          <optgroup label="Teams">{data.scope_options.teams.map((t) => <option key={t.id} value={`t:${t.id}`}>{t.name}</option>)}</optgroup>
+        )}
+        <optgroup label="Owners">{data.scope_options.users.map((u) => <option key={u.id} value={`u:${u.id}`}>{u.name}</option>)}</optgroup>
+      </select>
+    </label>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Today's CRM brief + Ask AI
+// ---------------------------------------------------------------------------
+const TONES = { purple: COLORS.purple, blue: COLORS.blue, amber: COLORS.amber, emerald: COLORS.emerald, rose: COLORS.rose };
+const BRIEF_ICON = { followups_attention: PhoneCall, opps_stalled: Target, quotes_expiring: FileText, renewals_due: Repeat, payments_overdue: Wallet };
+
+function openAssistant(prompt) {
+  window.dispatchEvent(new CustomEvent('icrm:open-assistant', { detail: { prompt } }));
+}
+
+function Brief({ brief, ctx, onReview }) {
+  const live = brief.filter((b) => !b.locked && b.count > 0);
+  const top = live.slice(0, 3);
+  return (
+    <div className="grid lg:grid-cols-[1fr_300px] gap-3.5">
+      <section className="dash-card p-4 relative overflow-hidden" aria-label="Today's CRM brief"
+        style={{ background: 'linear-gradient(110deg, #F4F1FF 0%, #FFFFFF 70%)' }}>
+        <div className="flex items-center gap-3">
+          <span className="w-11 h-11 rounded-2xl flex items-center justify-center text-white shrink-0"
+            style={{ background: 'linear-gradient(135deg, #8B5CF6, #6C4FF7)' }}>
+            <Bot className="w-6 h-6" />
+          </span>
+          <div>
+            <h2 className="text-[16px] font-bold" style={{ color: 'var(--color-ink)' }}>Today&apos;s CRM Brief</h2>
+            <p className="text-[12px]" style={{ color: 'var(--color-muted)' }}>
+              {live.length === 0 ? 'Nothing needs attention right now.' : `Here ${top.length === 1 ? 'is 1 thing' : `are ${top.length} things`} to focus on today, from your live CRM data.`}
+            </p>
+          </div>
+        </div>
+        {top.length > 0 && (
+          <div className="grid sm:grid-cols-3 gap-2.5 mt-3.5">
+            {top.map((b) => {
+              const Icon = BRIEF_ICON[b.key] || Sparkles;
+              const tone = TONES[b.tone] || COLORS.purple;
+              return (
+                <DLink key={b.key} to={drillHref(b, ctx)} className="dash-card flex items-center gap-3 px-3 py-3 group"
+                  label={`${b.count} ${b.label}: ${b.detail}`}>
+                  <span className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: tone.soft, color: tone.c }}>
+                    <Icon className="w-5 h-5" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[20px] font-bold leading-none tabular-nums" style={{ color: tone.c }}>{b.count}</span>
+                    <span className="block text-[13px] font-medium mt-1" style={{ color: 'var(--color-ink)' }}>{b.label}</span>
+                    <span className="block text-[11px] truncate" style={{ color: 'var(--color-muted)' }}>{b.detail}</span>
+                  </span>
+                  <ChevronRight className="w-4 h-4 shrink-0 transition-transform group-hover:translate-x-0.5" style={{ color: 'var(--color-disabled)' }} />
+                </DLink>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      <section className="dash-card p-4 flex flex-col" aria-label="Ask AI">
+        <h2 className="text-[15px] font-bold flex items-center gap-2" style={{ color: 'var(--color-ink)' }}>
+          <Sparkles className="w-5 h-5" style={{ color: 'var(--color-brand)' }} /> Ask AI
+        </h2>
+        <p className="text-[12px] mt-1" style={{ color: 'var(--color-muted)' }}>What should I focus on today?</p>
+        <div className="mt-auto pt-3 flex flex-col gap-2">
+          <button type="button" onClick={() => openAssistant('What should I focus on today?')}
+            className="w-full text-[13px] font-semibold text-white py-2 rounded-lg transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+            style={{ background: 'linear-gradient(90deg, #6C4FF7, #7C3AED)' }}>
+            Ask AI
+          </button>
+          <button type="button" onClick={onReview}
+            className="w-full text-[13px] font-semibold py-2 rounded-lg inline-flex items-center justify-center gap-1.5 transition-colors hover:bg-[var(--color-brand-faint)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+            style={{ border: '1px solid var(--color-brand-border)', color: 'var(--color-brand)' }}>
+            Review Insights <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+// Every insight, with the records it is based on.
+function InsightsDrawer({ brief, ctx, onClose }) {
+  useEffect(() => {
+    const esc = (e) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', esc);
+    return () => document.removeEventListener('keydown', esc);
+  }, [onClose]);
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/30" role="dialog" aria-modal="true" aria-label="CRM insights" onClick={onClose}>
+      <div className="w-full max-w-md h-full bg-white p-5 overflow-y-auto shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h2 className="text-[16px] font-bold flex items-center gap-2" style={{ color: 'var(--color-ink)' }}>
+            <Sparkles className="w-5 h-5" style={{ color: 'var(--color-brand)' }} /> Insights
+          </h2>
+          <button type="button" onClick={onClose} aria-label="Close" className="dash-link p-1"><X className="w-4 h-4" /></button>
+        </div>
+        <p className="text-[12px] mt-1" style={{ color: 'var(--color-muted)' }}>Each insight is counted from live CRM records. Open one to see all of them, or a source record directly.</p>
+        <div className="mt-4 space-y-3">
+          {brief.map((b) => {
+            const Icon = BRIEF_ICON[b.key] || Sparkles;
+            const tone = TONES[b.tone] || COLORS.purple;
+            return (
+              <div key={b.key} className="rounded-xl border p-3" style={{ borderColor: 'var(--color-line)' }}>
+                <div className="flex items-center gap-3">
+                  <span className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ background: tone.soft, color: tone.c }}><Icon className="w-[18px] h-[18px]" /></span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[14px] font-semibold" style={{ color: 'var(--color-ink)' }}>
+                      {b.locked ? <Locked /> : <>{b.count} {b.label}</>}
+                    </div>
+                    <div className="text-[11.5px]" style={{ color: 'var(--color-muted)' }}>{b.detail}</div>
+                  </div>
+                  {!b.locked && <ViewLink to={drillHref(b, ctx)}>{b.action}</ViewLink>}
+                </div>
+                {b.samples?.length > 0 && (
+                  <ul className="mt-2 space-y-1">
+                    {b.samples.map((s) => (
+                      <li key={s.id}>
+                        <DLink to={s.path} className="flex items-center justify-between gap-2 px-2 py-1.5 text-[12px]" style={{ color: 'var(--color-ink)' }}>
+                          <span className="truncate">{s.title}</span>
+                          <span className="shrink-0" style={{ color: 'var(--color-muted)' }}>{s.meta}</span>
+                        </DLink>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <button type="button" onClick={() => { onClose(); openAssistant('Summarise what needs my attention today.'); }}
+          className="mt-4 w-full text-[13px] font-semibold text-white py-2 rounded-lg" style={{ background: 'var(--color-brand)' }}>
+          Ask the CRM Assistant
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Needs attention
+// ---------------------------------------------------------------------------
+function AttentionCard({ m, icon: Icon, tone, label, sub, action, ctx, extra }) {
+  const to = drillHref(m, ctx);
+  return (
+    <div className="dash-card relative flex items-center gap-3 px-3.5 py-3 group" style={{ background: '#FFFFFF' }}>
+      <span className="w-10 h-10 rounded-full flex items-center justify-center shrink-0" style={{ background: tone.soft, color: tone.c }}>
+        <Icon className="w-5 h-5" />
+      </span>
+      <div className="min-w-0 flex-1">
+        {m.locked ? <Locked /> : (
+          <Link to={to} onClick={rememberScroll} className="dash-stretch block focus:outline-none" aria-label={`${m.count} ${label} — ${action}`}>
+            <span className="block text-[22px] font-bold leading-none tabular-nums" style={{ color: tone.c }}>{m.count}</span>
+          </Link>
+        )}
+        <div className="text-[12.5px] font-medium mt-1" style={{ color: 'var(--color-ink)' }}>{label}</div>
+        {sub && <div className="text-[11px]" style={{ color: 'var(--color-muted)' }}>{sub}</div>}
+        {extra}
+      </div>
+      {!m.locked && (
+        <span className="text-[11px] font-semibold shrink-0 inline-flex items-center gap-0.5" style={{ color: tone.c }}>
+          {action} <ChevronRight className="w-3.5 h-3.5 transition-transform group-hover:translate-x-0.5" />
+        </span>
+      )}
+    </div>
+  );
+}
+
+function NeedsAttention({ attention, ctx, windows }) {
+  const a = attention;
+  const renewalOverdue = a.renewals_overdue;
+  return (
+    <section className="rounded-2xl p-4 mt-4" aria-label="Needs attention"
+      style={{ background: 'linear-gradient(100deg, #FFF1F2 0%, #FFF7F7 55%, #FFFBF5 100%)', border: '1px solid #FBD5DA' }}>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-3">
+          <span className="w-10 h-10 rounded-full flex items-center justify-center text-white shrink-0" style={{ background: '#F43F5E' }}>
+            <AlertTriangle className="w-5 h-5" />
+          </span>
+          <div>
+            <h2 className="text-[16px] font-bold" style={{ color: '#E11D48' }}>Needs Attention</h2>
+            <p className="text-[12px]" style={{ color: 'var(--color-muted)' }}>These items need your immediate action.</p>
+          </div>
+        </div>
+        <ViewAllMenu items={[
+          { label: 'Overdue tasks', to: drillHref(a.tasks_overdue, ctx), count: a.tasks_overdue.count },
+          { label: 'High-priority tickets', to: drillHref(a.tickets_high_priority, ctx), count: a.tickets_high_priority.count },
+          { label: 'Expired / expiring quotations', to: drillHref(a.quotes_expiring, ctx), count: a.quotes_expiring.count },
+          { label: `Renewals due (next ${windows.renewal_days} days)`, to: drillHref(a.renewals_due, ctx), count: a.renewals_due.count },
+          { label: 'Overdue renewals', to: drillHref(renewalOverdue, ctx), count: renewalOverdue.count },
+        ]} />
+      </div>
+      <div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-3 mt-3.5">
+        <AttentionCard m={a.tasks_overdue} icon={CalendarClock} tone={COLORS.rose} label="Overdue tasks" sub="Not completed, due before today" action="View Tasks" ctx={ctx} />
+        <AttentionCard m={a.tickets_high_priority} icon={Zap} tone={COLORS.orange} label="High-priority tickets" sub="Open · Urgent and High" action="Resolve" ctx={ctx} />
+        <AttentionCard m={a.quotes_expiring} icon={FileText} tone={COLORS.amber} label="Expired / expiring quotations" sub={`Sent or viewed · expired or ≤ ${windows.quote_days} days`} action="Follow Up" ctx={ctx} />
+        <AttentionCard m={a.renewals_due} icon={Repeat} tone={COLORS.emerald} label="Renewals due" sub={`Next ${windows.renewal_days} days`} action="View Renewals" ctx={ctx}
+          extra={!renewalOverdue.locked && renewalOverdue.count > 0 && (
+            <DLink to={drillHref(renewalOverdue, ctx)} className="dash-above inline-block text-[11px] font-semibold mt-0.5" style={{ color: '#E11D48' }}>
+              + {renewalOverdue.count} overdue renewal{renewalOverdue.count === 1 ? '' : 's'}
+            </DLink>
+          )} />
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// KPI cards
+// ---------------------------------------------------------------------------
+function Kpi({ label, value, icon: Icon, tone, to, sub, locked, children }) {
+  const body = (
+    <>
+      <div className="flex items-start justify-between">
+        <span className="w-9 h-9 rounded-[10px] flex items-center justify-center" style={{ background: tone.soft, color: tone.c }}>
+          <Icon className="w-[18px] h-[18px]" />
+        </span>
+        {to && <ChevronRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5" style={{ color: 'var(--color-disabled)' }} />}
+      </div>
+      <div className="text-[12.5px] mt-2.5" style={{ color: 'var(--color-muted)' }}>{label}</div>
+      <div className="dash-figure text-[24px] font-bold leading-tight tabular-nums" style={{ fontFamily: 'var(--font-display)' }}>
+        {locked ? <Locked /> : value}
+      </div>
+      {sub && <div className="text-[11.5px] mt-1" style={{ color: 'var(--color-muted)' }}>{sub}</div>}
+    </>
+  );
+  return (
+    <div className="dash-card dash-glow relative p-3.5 group h-full" style={{ '--accent-rgb': tone.rgb }}>
+      {to && !locked
+        ? <Link to={to} onClick={rememberScroll} className="dash-stretch block" aria-label={`${label}: ${value}`}>{body}</Link>
+        : body}
       {children}
     </div>
   );
 }
 
-// The "view all" affordance in a panel header. Muted until hovered, so it
-// never competes with the panel's own title.
-function ViewAll({ to }) {
+function TrendPill({ trend }) {
+  if (!trend || trend.delta_pct === null || trend.delta_pct === undefined || trend.delta_pct === 0) return null;
+  const down = trend.delta_pct < 0;
+  const good = trend.good_when === 'down' ? down : !down;
   return (
-    <Link to={to}
-      className="text-[11px] font-semibold shrink-0 flex items-center gap-0.5 transition-colors hover:text-[var(--color-brand)]"
-      style={{ color: 'var(--color-muted)' }}>
-      View all <ArrowRight className="w-3 h-3" />
-    </Link>
+    <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-1.5 py-0.5 rounded-md"
+      title={`${trend.current} now vs ${trend.previous} seven days ago`}
+      style={{ color: good ? 'var(--color-success-strong)' : 'var(--color-danger-strong)', background: good ? 'var(--color-success-soft)' : 'var(--color-danger-soft)' }}>
+      {down ? <ArrowDownRight className="w-3 h-3" /> : <ArrowUpRight className="w-3 h-3" />}
+      {Math.abs(trend.delta_pct)}% <span className="font-normal">{trend.label}</span>
+    </span>
   );
 }
 
-// The "and there are more of these" footer. Only rendered when the list was
-// actually truncated, so a panel showing everything doesn't invite a click
-// that changes nothing.
-function MoreLink({ shown, total, to, noun }) {
-  if (!total || total <= shown) return null;
+function OverdueActionsCard({ oa, ctx }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const esc = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', close);
+    document.addEventListener('keydown', esc);
+    return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', esc); };
+  }, [open]);
+  const tone = COLORS.rose;
   return (
-    <Link to={to}
-      className="mt-auto pt-2.5 shrink-0 flex items-center justify-between text-[11px] font-semibold -mx-4 px-4 transition-colors hover:text-[var(--color-brand)]"
-      style={{ color: 'var(--color-muted)', borderTop: '1px solid var(--color-line-soft)' }}>
-      <span>+ {total - shown} more {noun}</span>
-      <span className="flex items-center gap-0.5" style={{ color: 'var(--color-brand)' }}>
-        {total} total <ArrowRight className="w-3 h-3" />
-      </span>
-    </Link>
-  );
-}
-
-const RELATED_LABEL = { leads: 'Lead', accounts: 'Account', contacts: 'Contact', opportunities: 'Opportunity', tickets: 'Ticket' };
-// Priority is a status, so it uses the semantic colours and nothing else.
-const PRIORITY_TONE = { Urgent: '#F43F5E', High: '#F97316', Medium: '#F59E0B', Low: '#3B82F6' };
-
-// A single "what's on today" row. Now an inset tinted card rather than bare
-// text on white — the same .dash-row treatment the activity feed uses, so
-// every list on the page is visibly the same component.
-function AgendaRow({ item, render, accent }) {
-  const r = render(item);
-  const initials = (r.title || '?').split(' ').filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
-  const chipColor = r.dotTone || accent.c;
-  const chipBg = r.dotTone ? `${r.dotTone}1A` : accent.soft;
-  const body = (
-    <div className="flex items-center gap-2.5 min-w-0 px-2.5 py-[7px]">
-      <div className="w-[30px] h-[30px] rounded-[9px] flex items-center justify-center text-[10px] font-bold shrink-0"
-        style={{ background: chipBg, color: chipColor }}>
-        {r.icon ? <r.icon className="w-[15px] h-[15px]" strokeWidth={2} /> : initials}
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="text-[12px] font-semibold truncate leading-tight" style={{ color: 'var(--color-ink)' }}>{r.title}</div>
-        {r.meta && <div className="text-[11px] truncate mt-0.5" style={{ color: 'var(--color-muted)' }}>{r.meta}</div>}
-      </div>
-      {r.time && (
-        <span className="text-[11px] font-semibold shrink-0 px-1.5 py-0.5 rounded-md tabular-nums"
-          style={{ background: 'var(--color-canvas)', color: 'var(--color-muted)' }}>{r.time}</span>
-      )}
-      {r.phone && (
-        // A <button>, not a nested <a> — this row's own wrapper is already an
-        // anchor when r.to is set, and an anchor inside an anchor is invalid
-        // HTML (React warns on it, and click targeting near the boundary
-        // gets unreliable in some browsers). window.location does the same
-        // job a tel: link does.
-        <button type="button" title="Call"
-          onClick={(e) => { e.preventDefault(); e.stopPropagation(); window.location.href = `tel:${r.phone}`; }}
-          className="w-7 h-7 rounded-[9px] flex items-center justify-center shrink-0 transition-opacity hover:opacity-80"
-          style={{ background: 'var(--color-success-soft)', color: 'var(--color-success)' }}>
-          <Phone className="w-3.5 h-3.5" strokeWidth={2} />
-        </button>
-      )}
-    </div>
-  );
-  return r.to
-    ? <Link to={r.to} className="dash-row block">{body}</Link>
-    : <div className="dash-row">{body}</div>;
-}
-
-// Today's three lists. The cap is what actually fixes the runaway panel: the
-// backend sends six, this shows five, and the footer says how many there
-// really are and links to the list view that can show them all properly.
-//
-// AGENDA_HEIGHT is derived, not guessed: header (47) + five 48px rows (243)
-// + the "view all" footer (36) + padding. Measured in a browser rather than
-// eyeballed — at 296 the fifth row ended one pixel past the card and was
-// silently hidden behind the footer, so a panel claiming five rows showed
-// four.
-const AGENDA_CAP = 5;
-const AGENDA_HEIGHT = 368;
-// The other two panel rows. Each row's cards share one height so the grid
-// lines up; the numbers are measured against real content, not guessed.
-const CHART_HEIGHT = 312;
-const REPORT_HEIGHT = 300;
-
-function AgendaCard({ title, icon, accent = COLORS.purple, items, total, render, empty, cta, viewAll, noun, index = 0 }) {
-  const list = (items || []).slice(0, AGENDA_CAP);
-  const realTotal = total ?? (items || []).length;
-  return (
-    <Panel title={title} icon={icon} accent={accent} count={realTotal} height={AGENDA_HEIGHT} index={index}
-      action={list.length > 0 ? <ViewAll to={viewAll} /> : null}>
-      {list.length === 0 ? (
-        <div className="flex-1 flex flex-col items-center justify-center text-center gap-3 rounded-[10px]"
-          style={{ background: 'var(--color-surface-soft)' }}>
-          <span className="w-10 h-10 rounded-full flex items-center justify-center"
-            style={{ background: 'var(--color-brand-soft)', color: 'var(--color-brand)' }}>
-            <CheckCircle2 className="w-5 h-5" strokeWidth={2} />
+    <div ref={ref} className="dash-card dash-glow relative p-3.5 group h-full" style={{ '--accent-rgb': tone.rgb }}>
+      <button type="button" className="dash-stretch block w-full text-left" onClick={() => setOpen((o) => !o)}
+        aria-haspopup="menu" aria-expanded={open} aria-label={`Overdue actions: ${oa.count}. Choose tasks or follow-ups`} disabled={oa.locked}>
+        <div className="flex items-start justify-between">
+          <span className="w-9 h-9 rounded-[10px] flex items-center justify-center" style={{ background: tone.soft, color: tone.c }}>
+            <ClipboardCheck className="w-[18px] h-[18px]" />
           </span>
-          <p className="text-[12px] px-4" style={{ color: 'var(--color-muted)' }}>{empty}</p>
-          {cta && (
-            <Link to={cta.to}
-              className="text-[12px] font-semibold px-3.5 py-1.5 rounded-lg transition-colors"
-              style={{ background: 'var(--color-brand)', color: '#FFFFFF' }}>
-              {cta.label}
-            </Link>
-          )}
+          <ChevronDown className="w-4 h-4" style={{ color: 'var(--color-disabled)' }} />
         </div>
-      ) : (
-        <>
-          <div className="flex flex-col gap-1.5 overflow-hidden">
-            {list.map((item, i) => <AgendaRow key={i} item={item} render={render} accent={accent} />)}
-          </div>
-          <MoreLink shown={list.length} total={realTotal} to={viewAll} noun={noun} />
-        </>
+        <div className="text-[12.5px] mt-2.5" style={{ color: 'var(--color-muted)' }}>Overdue Actions</div>
+        <div className="dash-figure text-[24px] font-bold leading-tight tabular-nums">{oa.locked ? <Locked /> : oa.count}</div>
+      </button>
+      <div className="relative dash-above mt-1 flex items-center gap-1.5 flex-wrap text-[11px]" style={{ color: 'var(--color-muted)' }}>
+        {oa.parts.map((p, i) => (
+          <span key={p.label}>
+            {i > 0 && '· '}
+            {p.locked ? <span>{p.label}: <Locked small /></span> : (
+              <DLink to={drillHref(p, ctx)} className="underline-offset-2 hover:underline">{p.count} {p.label.replace('Overdue ', '')}</DLink>
+            )}
+          </span>
+        ))}
+      </div>
+      {oa.trend && <div className="relative dash-above mt-1.5"><TrendPill trend={oa.trend} /></div>}
+      {open && (
+        <div role="menu" className="dash-menu absolute left-2 right-2 top-[70px] z-30 p-1.5">
+          {oa.parts.filter((p) => !p.locked).map((p) => (
+            <Link key={p.label} role="menuitem" to={drillHref(p, ctx)} onClick={rememberScroll}
+              className="dash-link flex items-center justify-between px-2.5 py-2 text-[12.5px]" style={{ color: 'var(--color-ink)' }}>
+              <span>{p.label}</span><span className="font-semibold tabular-nums">{p.count}</span>
+            </Link>
+          ))}
+          <p className="px-2.5 pt-1 pb-0.5 text-[10.5px]" style={{ color: 'var(--color-faint)' }}>A follow-up on a lead that already has an overdue task is counted once, under tasks.</p>
+        </div>
       )}
-    </Panel>
+    </div>
   );
 }
 
-// Named sources keep the same colour wherever they appear, so "Website" is
-// always the same blue rather than whatever position it happened to sort
-// into this week. Anything unnamed falls through to the ordered palette.
-const SOURCE_COLOR = {
-  Website: '#3B82F6', Partner: '#8B5CF6', LinkedIn: '#F43F7A',
-  Referral: '#F59E0B', 'Facebook Ads': '#10B981', Facebook: '#10B981',
-  Google: '#14B8A6', Instagram: '#F43F7A', 'Walk-in': '#6C4FF7',
-};
-
-function SourceBars({ sources }) {
-  const top = (sources || []).slice(0, 5);
-  const max = Math.max(1, ...top.map((s) => s.c));
-  const palette = ['#3B82F6', '#8B5CF6', '#F43F7A', '#F59E0B', '#10B981', '#14B8A6', '#6C4FF7', '#EC4899'];
-  // Bars start at 0 width and animate to their real width a frame after
-  // mount — without this the CSS transition on width has nothing to
-  // transition FROM and the bars just appear pre-filled.
-  const [grown, setGrown] = useState(false);
-  useEffect(() => { const id = requestAnimationFrame(() => setGrown(true)); return () => cancelAnimationFrame(id); }, []);
+function KeyMetrics({ k, ctx, monthLabel }) {
+  const open = k.open_opportunities;
   return (
-    <div className="space-y-3">
-      {top.map((s, i) => {
-        const color = SOURCE_COLOR[s.source] || palette[i % palette.length];
-        return (
-          <div key={s.source}>
-            <div className="flex items-center justify-between text-[12px] mb-1.5">
-              <span className="truncate font-medium" style={{ color: 'var(--color-ink)' }}>{s.source}</span>
-              <span className="font-semibold shrink-0 tabular-nums" style={{ color: 'var(--color-ink)' }}>{s.c}</span>
-            </div>
-            <div className="h-[7px] rounded-full overflow-hidden" style={{ background: 'var(--color-canvas)' }}>
-              <div className="dash-bar-fill h-full rounded-full"
-                style={{
-                  width: grown ? `${(s.c / max) * 100}%` : '0%',
-                  background: color,
-                  transitionDelay: `${i * 60}ms`,
-                }} />
-            </div>
-          </div>
-        );
-      })}
-      {top.length === 0 && <p className="text-[12px]" style={{ color: 'var(--color-muted)' }}>No leads yet.</p>}
+    <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3.5">
+      <Kpi label="Total Leads" icon={Users} tone={COLORS.purple} value={k.total_leads.count} locked={k.total_leads.locked}
+        to={drillHref(k.total_leads, ctx)}>
+        {!k.leads_new_week.locked && (
+          <DLink to={drillHref(k.leads_new_week, ctx)} className="dash-above relative mt-1 inline-flex items-center gap-1 text-[11px] font-semibold px-1.5 py-0.5 rounded-md"
+            style={{ color: 'var(--color-success-strong)', background: 'var(--color-success-soft)' }}>
+            <ArrowUpRight className="w-3 h-3" /> +{k.leads_new_week.count} this week
+          </DLink>
+        )}
+      </Kpi>
+      <Kpi label="Pipeline Value" icon={Target} tone={COLORS.teal} value={inr(open.sum)} locked={open.locked}
+        sub="Open opportunities" to={drillHref(open, ctx)} />
+      <Kpi label="Open Opportunities" icon={TrendingUp} tone={COLORS.amber} value={open.count} locked={open.locked}
+        sub="As of today" to={drillHref(open, ctx)} />
+      <Kpi label="Won This Month" icon={Trophy} tone={COLORS.emerald} value={inr(k.won_this_month.sum)} locked={k.won_this_month.locked}
+        sub={`${monthLabel} · ${k.won_this_month.count ?? 0} deal${k.won_this_month.count === 1 ? '' : 's'}`} to={drillHref(k.won_this_month, ctx)} />
+      <OverdueActionsCard oa={k.overdue_actions} ctx={ctx} />
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Collections — the one panel on this page that reports cash rather than
-// forecast. Everything else counts deals that might close; this counts money
-// that has actually arrived, which is usually the first question anyone
-// running the business asks.
+// Today's activities
 // ---------------------------------------------------------------------------
-function CollectionsCard({ collections, index }) {
-  const c = collections || {};
-  const pct = c.collected_pct;
-  const [grown, setGrown] = useState(false);
-  useEffect(() => { const id = requestAnimationFrame(() => setGrown(true)); return () => cancelAnimationFrame(id); }, []);
+function Row({ to, children, trailing }) {
   return (
-    <Panel title="Collections" subtitle="Invoiced vs actually received" icon={Wallet} accent={COLORS.teal}
-      height={REPORT_HEIGHT} index={index} action={<ViewAll to="/records/invoices" />}>
-      {pct === null || pct === undefined ? (
-        <div className="flex-1 flex items-center justify-center rounded-[10px]" style={{ background: 'var(--color-surface-soft)' }}>
-          <p className="text-[12px]" style={{ color: 'var(--color-muted)' }}>No invoices raised yet.</p>
-        </div>
-      ) : (
-        <>
-          <div className="flex items-end justify-between gap-2">
-            <div>
-              <div className="dash-figure text-[23px] font-bold leading-none tabular-nums" style={{ fontFamily: 'var(--font-display)' }}>
-                {inrShort(c.collected)}
-              </div>
-              <div className="text-[11px] mt-1.5" style={{ color: 'var(--color-muted)' }}>collected of {inrShort(c.invoiced)}</div>
-            </div>
-            <span className="text-[17px] font-bold tabular-nums shrink-0" style={{ color: 'var(--color-success)' }}>{pct}%</span>
-          </div>
-
-          {/* Track is a desaturated green rather than plain grey — the bar
-              reads as "how far along" instead of as two unrelated colours. */}
-          <div className="h-[7px] rounded-full overflow-hidden mt-3" style={{ background: '#EAF0EE' }}>
-            <div className="dash-bar-fill h-full rounded-full"
-              style={{ width: grown ? `${Math.min(100, pct)}%` : '0%', background: 'var(--color-success)' }} />
-          </div>
-
-          <div className="grid grid-cols-2 gap-2 mt-4">
-            <div className="rounded-[10px] p-2.5" style={{ background: 'var(--color-canvas)' }}>
-              <div className="text-[11px]" style={{ color: 'var(--color-muted)' }}>Outstanding</div>
-              <div className="text-[14px] font-bold mt-1 tabular-nums" style={{ color: 'var(--color-ink)' }}>{inrShort(c.outstanding)}</div>
-            </div>
-            <div className="rounded-[10px] p-2.5"
-              style={{ background: c.overdue_count ? 'var(--color-danger-soft)' : 'var(--color-canvas)' }}>
-              <div className="text-[11px]" style={{ color: c.overdue_count ? 'var(--color-danger-strong)' : 'var(--color-muted)' }}>Overdue</div>
-              <div className="text-[14px] font-bold mt-1 tabular-nums"
-                style={{ color: c.overdue_count ? 'var(--color-danger-strong)' : 'var(--color-ink)' }}>
-                {inrShort(c.overdue_amount)}
-              </div>
-            </div>
-          </div>
-          <p className="text-[11px] mt-2.5" style={{ color: 'var(--color-faint)' }}>
-            {c.invoice_count} invoice{c.invoice_count === 1 ? '' : 's'}
-            {c.overdue_count > 0 && <> · <span style={{ color: 'var(--color-danger-strong)' }}>{c.overdue_count} past due date</span></>}
-          </p>
-        </>
-      )}
-    </Panel>
+    <div className="dash-row relative flex items-center gap-2.5 px-2.5 py-2">
+      {to && <Link to={to} onClick={rememberScroll} className="dash-stretch" aria-hidden="true" tabIndex={-1} />}
+      {children}
+      {trailing}
+      {to && <ChevronRight className="w-4 h-4 shrink-0" style={{ color: 'var(--color-disabled)' }} />}
+    </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Who is closing business. Ranked by value rather than count — five small
-// wins and one large one are not the same contribution, and ordering by
-// count would say they were.
-// ---------------------------------------------------------------------------
-// Initials avatars, tinted from a small fixed set so the same person keeps
-// the same colour between renders rather than shifting with their rank.
-const AVATAR_TINT = [
-  { bg: '#F0EDFF', fg: '#6C4FF7' }, { bg: '#EFF6FF', fg: '#3B82F6' },
-  { bg: '#ECFDF9', fg: '#0F9F8F' }, { bg: '#FFF1F2', fg: '#E11D48' },
-  { bg: '#FFFBEB', fg: '#D97706' },
-];
 function initialsOf(name) {
   return (name || '?').split(' ').filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
 }
 
-function LeaderboardCard({ leaderboard, index }) {
-  const rows = leaderboard || [];
-  const max = Math.max(1, ...rows.map((r) => r.value));
+function RelatedLink({ related }) {
+  if (!related) return null;
   return (
-    <Panel title="Top performers" subtitle="Won deals by owner, all time" icon={Medal} accent={COLORS.purple}
-      height={REPORT_HEIGHT} index={index} action={<ViewAll to="/records/opportunities" />}>
-      {rows.length === 0 ? (
-        <div className="flex-1 flex items-center justify-center rounded-[10px]" style={{ background: 'var(--color-surface-soft)' }}>
-          <p className="text-[12px]" style={{ color: 'var(--color-muted)' }}>No deals won yet.</p>
-        </div>
-      ) : (
-        <div className="flex flex-col gap-2">
-          {rows.map((r, i) => {
-            const tint = AVATAR_TINT[i % AVATAR_TINT.length];
-            return (
-              <div key={`${r.name}-${i}`} className="flex items-center gap-2">
-                <span className="w-[18px] text-[11px] font-bold shrink-0 text-center rounded-[5px] tabular-nums"
-                  style={{ background: '#FFF8E7', color: '#B7791F' }}>{i + 1}</span>
-                <span className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0"
-                  style={{ background: tint.bg, color: tint.fg }}>{initialsOf(r.name)}</span>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-baseline justify-between gap-2">
-                    <span className="text-[12px] font-semibold truncate" style={{ color: 'var(--color-ink)' }}>{r.name}</span>
-                    <span className="text-[12px] font-semibold shrink-0 tabular-nums" style={{ color: 'var(--color-ink)' }}>{inrShort(r.value)}</span>
-                  </div>
-                  <div className="h-[5px] rounded-full overflow-hidden mt-1.5" style={{ background: 'var(--color-canvas)' }}>
-                    <div className="h-full rounded-full"
-                      style={{ width: `${(r.value / max) * 100}%`, background: 'var(--color-brand)' }} />
-                  </div>
+    <DLink to={related.path} className="dash-above relative truncate hover:underline" style={{ color: 'var(--color-muted)' }}>
+      {related.name} <span style={{ color: 'var(--color-faint)' }}>· {related.type}</span>
+    </DLink>
+  );
+}
+
+function FollowupsCard({ f, ctx }) {
+  const locked = f.today.locked;
+  const rows = [...(f.overdue.items || []), ...(f.today.items || [])].slice(0, 3);
+  return (
+    <Panel title="Follow-ups" icon={Phone} accent={COLORS.purple}
+      badge={!locked && (
+        <span className="inline-flex items-center gap-1.5">
+          <DLink to={drillHref(f.today, ctx)} className="dash-above text-[11px] font-semibold px-1.5 py-0.5 rounded-md tabular-nums"
+            style={{ background: COLORS.purple.soft, color: COLORS.purple.c }} label={`${f.today.count} follow-ups due today`}>
+            {f.today.count} due today
+          </DLink>
+          <DLink to={drillHref(f.overdue, ctx)} className="dash-above text-[11px] font-semibold px-1.5 py-0.5 rounded-md tabular-nums"
+            style={{ background: COLORS.rose.soft, color: '#E11D48' }} label={`${f.overdue.count} overdue follow-ups`}>
+            {f.overdue.count} overdue
+          </DLink>
+        </span>
+      )}
+      action={!locked && (
+        <ViewAllMenu items={[
+          { label: 'Due today', to: drillHref(f.today, ctx), count: f.today.count },
+          { label: 'Overdue', to: drillHref(f.overdue, ctx), count: f.overdue.count },
+        ]} />
+      )}>
+      {locked ? <Empty><Locked /></Empty> : rows.length === 0 ? <Empty>No follow-ups due today or overdue.</Empty> : (
+        <div className="flex flex-col gap-1.5">
+          {rows.map((r) => (
+            <Row key={r.id} to={r.path}
+              trailing={r.mobile && (
+                <a href={`tel:${r.mobile}`} className="dash-above relative w-8 h-8 rounded-full flex items-center justify-center shrink-0"
+                  style={{ background: 'var(--color-success-soft)', color: 'var(--color-success)' }} aria-label={`Call ${r.title}`}>
+                  <Phone className="w-3.5 h-3.5" />
+                </a>
+              )}>
+              <span className="w-9 h-9 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0" style={{ background: COLORS.purple.soft, color: COLORS.purple.c }}>{initialsOf(r.title)}</span>
+              <div className="min-w-0 flex-1">
+                <div className="text-[12.5px] font-semibold truncate" style={{ color: 'var(--color-ink)' }}>{r.title}</div>
+                <div className="text-[11px] truncate" style={{ color: 'var(--color-muted)' }}>{r.company ? `${r.company} · ` : ''}Lead</div>
+                <div className="text-[11px] font-medium" style={{ color: r.days_overdue > 0 ? '#E11D48' : 'var(--color-muted)' }}>
+                  {r.days_overdue > 0 ? `Overdue by ${r.days_overdue} day${r.days_overdue === 1 ? '' : 's'}` : 'Due today'}
                 </div>
-                <span className="text-[11px] shrink-0 tabular-nums w-11 text-right" style={{ color: 'var(--color-muted)' }}>{r.won} won</span>
               </div>
+            </Row>
+          ))}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function MeetingsCard({ m, ctx }) {
+  const to = drillHref(m, ctx);
+  return (
+    <Panel title="Meetings" icon={CalendarDays} accent={COLORS.blue}
+      badge={!m.locked && <DLink to={to} className="dash-above text-[14px] font-bold tabular-nums" style={{ color: COLORS.blue.c }} label={`${m.count} meetings today`}>{m.count}</DLink>}
+      action={<ViewLink to={to} />}>
+      {m.locked ? <Empty><Locked /></Empty> : m.items.length === 0 ? <Empty>No meetings today.</Empty> : (
+        <div className="flex flex-col gap-1.5">
+          {m.items.map((x) => (
+            <Row key={x.id} to={x.path}>
+              <span className="w-9 h-9 rounded-[10px] flex items-center justify-center shrink-0" style={{ background: COLORS.blue.soft, color: COLORS.blue.c }}>
+                <CalendarDays className="w-4 h-4" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="text-[12.5px] font-semibold truncate" style={{ color: x.past ? 'var(--color-muted)' : 'var(--color-ink)' }}>{x.title}</div>
+                <div className="text-[11px] tabular-nums" style={{ color: 'var(--color-muted)' }}>{hhmm(x.start)}{x.end ? ` – ${hhmm(x.end)}` : ''}{x.past ? ' · ended' : ''}</div>
+                <div className="text-[11px] truncate"><RelatedLink related={x.related} /></div>
+              </div>
+            </Row>
+          ))}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+const PRIORITY_PILL = { Urgent: ['#FFF1F2', '#BE123C'], High: ['#FFF1F2', '#E11D48'], Medium: ['#FFFBEB', '#B45309'], Low: ['#EFF6FF', '#2563EB'] };
+function TasksCard({ t, ctx }) {
+  const to = drillHref(t, ctx);
+  return (
+    <Panel title="Tasks" icon={CheckSquare} accent={COLORS.purple}
+      badge={!t.locked && (
+        <DLink to={to} className="dash-above text-[14px] font-bold tabular-nums inline-flex items-baseline gap-1.5" style={{ color: COLORS.purple.c }} label={`${t.count} tasks due today`}>
+          {t.count} <span className="text-[11px] font-medium" style={{ color: 'var(--color-muted)' }}>Due today</span>
+        </DLink>
+      )}
+      action={<ViewLink to={to} />}>
+      {t.locked ? <Empty><Locked /></Empty> : t.items.length === 0 ? <Empty>No tasks due today.</Empty> : (
+        <div className="flex flex-col gap-1.5">
+          {t.items.map((x) => {
+            const [bg, fg] = PRIORITY_PILL[x.priority] || ['var(--color-canvas)', 'var(--color-muted)'];
+            return (
+              <Row key={x.id} to={x.path}
+                trailing={x.priority && <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full shrink-0" style={{ background: bg, color: fg }}>{x.priority}</span>}>
+                <span className="w-9 h-9 rounded-[10px] flex items-center justify-center shrink-0" style={{ background: COLORS.purple.soft, color: COLORS.purple.c }}>
+                  <CheckSquare className="w-4 h-4" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[12.5px] font-semibold truncate" style={{ color: 'var(--color-ink)' }}>{x.title}</div>
+                  <div className="text-[11px] truncate">{x.related ? <RelatedLink related={x.related} /> : <span style={{ color: 'var(--color-faint)' }}>Due today</span>}</div>
+                </div>
+              </Row>
             );
           })}
         </div>
@@ -534,49 +681,197 @@ function LeaderboardCard({ leaderboard, index }) {
 }
 
 // ---------------------------------------------------------------------------
-// Open support load, worst-first. Resolved and closed tickets are excluded
-// entirely — this panel is about what is still on someone's plate.
+// Performance
 // ---------------------------------------------------------------------------
-// Same priority colours as the task rows — priority means one thing on this
-// page, so it looks like one thing.
-const TICKET_TONE = { ...PRIORITY_TONE, Unset: '#94A3B8' };
-
-function SupportCard({ ticketLoad, index }) {
-  const rows = ticketLoad || [];
-  const total = rows.reduce((s, r) => s + r.c, 0);
+function Hint({ text }) {
   return (
-    <Panel title="Support load" subtitle="Open tickets by priority" icon={LifeBuoy} accent={COLORS.rose}
-      height={REPORT_HEIGHT} index={index} action={<ViewAll to="/records/tickets" />}>
-      {total === 0 ? (
-        <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center rounded-[10px]"
-          style={{ background: 'var(--color-surface-soft)' }}>
-          <CheckCircle2 className="w-7 h-7" style={{ color: 'var(--color-success)' }} />
-          <p className="text-[12px]" style={{ color: 'var(--color-muted)' }}>No open tickets. Queue is clear.</p>
-        </div>
-      ) : (
-        <>
-          <div className="flex items-end gap-2 mb-3">
-            <span className="dash-figure text-[23px] font-bold leading-none tabular-nums" style={{ fontFamily: 'var(--font-display)' }}>{total}</span>
-            <span className="text-[11px] mb-0.5" style={{ color: 'var(--color-muted)' }}>open right now</span>
-          </div>
-          {/* One proportional bar rather than four separate ones — the split
-              between priorities is the point, and a single stacked bar shows
-              that in one glance. */}
-          <div className="flex h-2 rounded-full overflow-hidden mb-4">
-            {rows.map((r) => (
-              <div key={r.priority} style={{ width: `${(r.c / total) * 100}%`, background: TICKET_TONE[r.priority] || '#94A3B8' }} />
-            ))}
-          </div>
-          <div className="flex flex-col gap-2">
-            {rows.map((r) => (
-              <div key={r.priority} className="flex items-center justify-between text-[12px]">
+    <span className="dash-above relative inline-flex" title={text} aria-label={text} tabIndex={0}>
+      <Info className="w-3.5 h-3.5" style={{ color: 'var(--color-faint)' }} />
+    </span>
+  );
+}
+
+function Performance({ p, ctx }) {
+  if (p.locked) return <div className="dash-card p-4"><Locked /></div>;
+  const tile = (label, icon, tone, value, m, extra, hint) => (
+    <div className="dash-card dash-glow relative p-3.5 flex items-center gap-3 group" style={{ '--accent-rgb': tone.rgb }}>
+      <span className="w-11 h-11 rounded-full flex items-center justify-center shrink-0" style={{ background: tone.soft, color: tone.c }}>
+        {icon}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="text-[12.5px] flex items-center gap-1.5" style={{ color: 'var(--color-muted)' }}>{label}{hint && <Hint text={hint} />}</div>
+        <Link to={drillHref(m, ctx)} onClick={rememberScroll} className="dash-stretch block" aria-label={`${label}: ${value}`}>
+          <span className="dash-figure text-[22px] font-bold tabular-nums">{value}</span>
+        </Link>
+        {extra && <div className="text-[11px]" style={{ color: 'var(--color-faint)' }}>{extra}</div>}
+      </div>
+      <ChevronRight className="w-4 h-4 shrink-0" style={{ color: 'var(--color-disabled)' }} />
+    </div>
+  );
+  return (
+    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
+      {tile('Deals Won', <Trophy className="w-5 h-5" />, COLORS.purple, p.won.count, p.won, inr(p.won.sum))}
+      {tile('Deals Lost', <AlertTriangle className="w-5 h-5" />, COLORS.rose, p.lost.count, p.lost, inr(p.lost.sum))}
+      {tile('Win Rate', <Target className="w-5 h-5" />, COLORS.purple, p.win_rate === null ? '—' : `${p.win_rate}%`, p.closed,
+        p.win_rate === null ? 'No deals closed in this period' : `${p.won.count} won of ${p.closed.count} closed`,
+        'Win rate = deals won ÷ (deals won + deals lost), closed in the selected period.')}
+      {tile('Average Deal Size', <IndianRupee className="w-5 h-5" />, COLORS.blue, p.avg_deal_size === null ? '—' : inr(p.avg_deal_size), p.won,
+        p.avg_deal_size === null ? 'No deals won in this period' : `${inr(p.won.sum)} ÷ ${p.won.count} won`,
+        'Average deal size = total value of deals won ÷ number of deals won, in the selected period.')}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Where things stand
+// ---------------------------------------------------------------------------
+function ChartFallback({ height }) {
+  return <div className="w-full rounded-xl animate-pulse" style={{ height, background: 'var(--color-canvas)' }} aria-busy="true" />;
+}
+
+function PipelineByStage({ pbs, ctx, go }) {
+  if (!pbs) return <Panel title="Pipeline by Stage" icon={Target} accent={COLORS.emerald}><Empty><Locked /></Empty></Panel>;
+  const allTo = drillHref(pbs, ctx);
+  return (
+    <Panel title="Pipeline by Stage" subtitle="Open opportunities · as of today · select a stage" icon={Target} accent={COLORS.emerald}
+      action={<ViewLink to={allTo}>View opportunities</ViewLink>}>
+      <div className="flex items-center gap-4 flex-wrap">
+        <Suspense fallback={<ChartFallback height={148} />}>
+          <StageDonut stages={pbs.stages} total={pbs.total}
+            onSelect={(s) => { rememberScroll(); go(drillHref(s, ctx)); }}
+            onSelectAll={() => { rememberScroll(); go(allTo); }} />
+        </Suspense>
+        <ul className="flex-1 min-w-[150px] space-y-1">
+          {pbs.stages.map((s, i) => (
+            <li key={s.stage}>
+              <DLink to={drillHref(s, ctx)} className="flex items-center justify-between gap-2 px-1.5 py-1 text-[12.5px]"
+                label={`${s.name}: ${s.count} open opportunities, ${inr(s.sum)}`}>
                 <span className="flex items-center gap-2 min-w-0">
-                  <span className="w-2 h-2 rounded-full shrink-0" style={{ background: TICKET_TONE[r.priority] || '#94A3B8' }} />
-                  <span className="truncate" style={{ color: 'var(--color-ink)' }}>{r.priority}</span>
+                  <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: stageColour(s, i) }} />
+                  <span className="truncate" style={{ color: 'var(--color-ink)' }}>{s.name}</span>
                 </span>
-                <span className="font-semibold shrink-0 tabular-nums" style={{ color: 'var(--color-ink)' }}>{r.c}</span>
+                <span className="font-semibold tabular-nums" style={{ color: 'var(--color-ink)' }}>{s.count}</span>
+              </DLink>
+            </li>
+          ))}
+          {pbs.stages.length === 0 && <li className="text-[12px]" style={{ color: 'var(--color-muted)' }}>No open opportunities.</li>}
+        </ul>
+      </div>
+      <p className="text-[11px] mt-2" style={{ color: 'var(--color-faint)' }}>{pbs.total} open · {inr(pbs.value)} · Won and Lost excluded</p>
+    </Panel>
+  );
+}
+
+function CollectionsTrend({ trend, ctx, go }) {
+  if (!trend) return <Panel title="Monthly Collections Trend" icon={TrendingUp} accent={COLORS.purple}><Empty><Locked /></Empty></Panel>;
+  return (
+    <Panel title="Monthly Collections Trend" subtitle={`Payments received by month · ${trend.range_label} · select a month`}
+      icon={TrendingUp} accent={COLORS.purple} action={<ViewLink to={drillHref(trend, ctx)}>View payments</ViewLink>}>
+      <Suspense fallback={<ChartFallback height={200} />}>
+        <CollectionsArea points={trend.points} onSelect={(p) => { rememberScroll(); go(drillHref(p, ctx)); }} />
+      </Suspense>
+      <p className="text-[11px] mt-1" style={{ color: 'var(--color-faint)' }}>{inr(trend.total)} received in the last six months, by receipt date</p>
+    </Panel>
+  );
+}
+
+const SOURCE_COLOR = ['#3B82F6', '#8B5CF6', '#F43F5E', '#F97316', '#10B981'];
+function LeadsBySource({ lbs, ctx }) {
+  const [grown, setGrown] = useState(false);
+  useEffect(() => { const id = requestAnimationFrame(() => setGrown(true)); return () => cancelAnimationFrame(id); }, []);
+  if (!lbs) return <Panel title="Leads by Source" icon={UserPlus} accent={COLORS.blue}><Empty><Locked /></Empty></Panel>;
+  const max = Math.max(1, ...lbs.top.map((s) => s.count));
+  const shown = lbs.top.reduce((a, s) => a + s.count, 0);
+  return (
+    <Panel title="Leads by Source" subtitle={`Top ${lbs.top.length} of ${lbs.source_count} sources · All time`} icon={IndianRupee} accent={COLORS.blue}
+      action={<ViewLink to={drillHref(lbs, ctx)}>View leads</ViewLink>}>
+      <ul className="space-y-1">
+        {lbs.top.map((s, i) => (
+          <li key={s.source}>
+            <DLink to={drillHref(s, ctx)} className="grid grid-cols-[92px_1fr_32px_14px] items-center gap-2 px-1.5 py-1.5 text-[12.5px]"
+              label={`${s.source}: ${s.count} leads`}>
+              <span className="truncate" style={{ color: 'var(--color-ink)' }}>{s.source}</span>
+              <span className="h-[8px] rounded-full overflow-hidden" style={{ background: 'var(--color-canvas)' }}>
+                <span className="dash-bar-fill block h-full rounded-full" style={{ width: grown ? `${(s.count / max) * 100}%` : '0%', background: SOURCE_COLOR[i % SOURCE_COLOR.length] }} />
+              </span>
+              <span className="font-semibold tabular-nums text-right" style={{ color: 'var(--color-ink)' }}>{s.count}</span>
+              <ChevronRight className="w-3.5 h-3.5" style={{ color: 'var(--color-disabled)' }} />
+            </DLink>
+          </li>
+        ))}
+        {lbs.top.length === 0 && <li className="text-[12px]" style={{ color: 'var(--color-muted)' }}>No leads yet.</li>}
+      </ul>
+      {lbs.top.length > 0 && (
+        <p className="text-[11px] mt-2" style={{ color: 'var(--color-faint)' }}>
+          {shown} of {lbs.total} leads shown{lbs.source_count > lbs.top.length ? `; ${lbs.source_count - lbs.top.length} smaller source${lbs.source_count - lbs.top.length === 1 ? '' : 's'} not charted` : ''}
+        </p>
+      )}
+    </Panel>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Money & workload
+// ---------------------------------------------------------------------------
+function Collections({ c, ctx }) {
+  const [grown, setGrown] = useState(false);
+  useEffect(() => { const id = requestAnimationFrame(() => setGrown(true)); return () => cancelAnimationFrame(id); }, []);
+  if (!c) return <Panel title="Collections" icon={Wallet} accent={COLORS.emerald}><Empty><Locked /></Empty></Panel>;
+  const pct = c.collected_pct;
+  return (
+    <Panel title="Collections" subtitle={`${c.period_label} · invoice basis`} icon={Receipt} accent={COLORS.emerald}
+      action={<ViewLink to={drillHref(c.invoiced, ctx)} />}>
+      {c.invoiced.count === 0 ? <Empty>No invoices raised yet.</Empty> : (
+        <>
+          <div className="flex items-end justify-between gap-2">
+            <div>
+              <div className="text-[12px]" style={{ color: 'var(--color-muted)' }}>Collected</div>
+              {c.collected.locked ? <Locked /> : (
+                <DLink to={drillHref(c.collected, ctx)} className="dash-figure text-[24px] font-bold tabular-nums" label={`Collected ${inr(c.collected.sum)}`}>
+                  {inrShort(c.collected.sum)}
+                </DLink>
+              )}
+            </div>
+            <div className="text-right">
+              <div className="text-[11px] flex items-center gap-1 justify-end" style={{ color: 'var(--color-muted)' }}>
+                Collection % <Hint text="Collection % = Collected ÷ Total Invoiced, on the same invoices (Draft, Cancelled and Written Off excluded)." />
               </div>
-            ))}
+              <DLink to={drillHref(c.collected, ctx)} className="text-[20px] font-bold tabular-nums" style={{ color: 'var(--color-success-strong)' }}>
+                {pct === null ? '—' : `${pct}%`}
+              </DLink>
+            </div>
+          </div>
+          <div className="text-[12px] mt-1" style={{ color: 'var(--color-muted)' }}>
+            Total invoiced{' '}
+            <DLink to={drillHref(c.invoiced, ctx)} className="font-semibold" style={{ color: 'var(--color-ink)' }} label={`Total invoiced ${inr(c.invoiced.sum)}`}>
+              {inrShort(c.invoiced.sum)}
+            </DLink>
+            <span style={{ color: 'var(--color-faint)' }}> · {c.invoiced.count} invoices</span>
+          </div>
+          <div className="h-[8px] rounded-full overflow-hidden mt-2.5" style={{ background: '#E6F4EE' }}>
+            <div className="dash-bar-fill h-full rounded-full" style={{ width: grown ? `${Math.min(100, pct || 0)}%` : '0%', background: 'var(--color-success)' }} />
+          </div>
+          <div className="grid grid-cols-2 gap-2 mt-3">
+            <DLink to={drillHref(c.outstanding, ctx)} className="rounded-[10px] p-2.5 flex items-center justify-between" style={{ background: 'var(--color-info-soft)' }}
+              label={`Outstanding ${inr(c.outstanding.sum)} across ${c.outstanding.count} invoices`}>
+              <span>
+                <span className="block text-[11px]" style={{ color: 'var(--color-muted)' }}>Outstanding</span>
+                <span className="block text-[16px] font-bold tabular-nums" style={{ color: 'var(--color-ink)' }}>{inrShort(c.outstanding.sum)}</span>
+              </span>
+              <ChevronRight className="w-4 h-4" style={{ color: 'var(--color-disabled)' }} />
+            </DLink>
+            <DLink to={drillHref(c.overdue, ctx)} className="rounded-[10px] p-2.5 flex items-center justify-between" style={{ background: 'var(--color-danger-soft)' }}
+              label={`Overdue ${inr(c.overdue.sum)} across ${c.overdue.count} invoices`}>
+              <span>
+                <span className="block text-[11px]" style={{ color: '#E11D48' }}>Overdue</span>
+                <span className="block text-[16px] font-bold tabular-nums" style={{ color: '#E11D48' }}>{inrShort(c.overdue.sum)}</span>
+              </span>
+              <ChevronRight className="w-4 h-4" style={{ color: '#FDA4AF' }} />
+            </DLink>
+          </div>
+          <div className="flex items-center justify-between gap-2 mt-2.5 flex-wrap">
+            <span className="text-[11px]" style={{ color: 'var(--color-faint)' }}>Overdue is included in outstanding.</span>
+            <ViewLink to={drillHref(c.overdue, ctx)}>View overdue payments</ViewLink>
           </div>
         </>
       )}
@@ -584,381 +879,327 @@ function SupportCard({ ticketLoad, index }) {
   );
 }
 
-// Each activity type gets one icon and one colour pair, and keeps them
-// everywhere. A call is always green, a meeting always purple — so the feed
-// can be read by colour before any of the text is.
-const ACTIVITY_STYLE = {
-  call:    { icon: PhoneCall,     c: '#10B981', soft: '#ECFDF5' },
-  meeting: { icon: CalendarClock, c: '#6C4FF7', soft: '#F0EDFF' },
-  task:    { icon: CheckSquare,   c: '#3B82F6', soft: '#EFF6FF' },
-  note:    { icon: StickyNote,    c: '#14B8A6', soft: '#ECFDF9' },
-  email:   { icon: Mail,          c: '#F59E0B', soft: '#FFFBEB' },
-};
-const ACTIVITY_FALLBACK = { icon: Send, c: '#6C4FF7', soft: '#F0EDFF' };
-const ACTIVITY_CAP = 8;
-
-// The feed. Previously this was a plain white block with flat text rows,
-// which is the one thing on the page that looked unfinished: an activity
-// list is the most "CRM" component on a dashboard and it was carrying the
-// least design. Each row is now an inset tinted card with a coloured type
-// chip, a clear title, its record, and a timestamp.
-function RecentActivity({ activities }) {
-  const all = activities || [];
-  const [filter, setFilter] = useState('all');
-  const types = useMemo(() => ['all', ...new Set(all.map((a) => a.type))], [all]);
-  const filtered = (filter === 'all' ? all : all.filter((a) => a.type === filter)).slice(0, ACTIVITY_CAP);
+const RANK_TINT = [['#FFF8E7', '#B7791F'], ['#EEF2F7', '#475467'], ['#FDF0E7', '#B45309'], ['#F4F5FA', '#667085'], ['#F4F5FA', '#667085']];
+function TopPerformers({ tp, ctx, reportTo }) {
+  if (!tp) return <Panel title="Top Performers" icon={Medal} accent={COLORS.amber}><Empty><Locked /></Empty></Panel>;
   return (
-    <div className="dash-card dash-glow p-3 dash-enter" style={{ '--accent-rgb': COLORS.purple.rgb, '--stagger': '100ms' }}>
-      <div className="flex items-center justify-between flex-wrap gap-2 px-1 pt-1 pb-2.5">
-        <h3 className="flex items-center gap-2 text-[13px] font-semibold" style={{ color: 'var(--color-ink)' }}>
-          <span className="w-7 h-7 rounded-[9px] flex items-center justify-center shrink-0"
-            style={{ background: 'var(--color-brand-soft)', color: 'var(--color-brand)' }}>
-            <Send className="w-[15px] h-[15px]" strokeWidth={2} />
-          </span>
-          Latest activity
-        </h3>
-        <div className="flex items-center gap-1.5">
-          {types.map((t) => (
-            <button key={t} onClick={() => setFilter(t)} data-active={filter === t}
-              className="dash-pill text-[11px] font-semibold px-2.5 py-1 capitalize">
-              {t}
-            </button>
-          ))}
-          <ViewAll to="/records/tasks" />
-        </div>
-      </div>
-      <div className="grid sm:grid-cols-2 gap-1.5">
-        {filtered.map((a) => {
-          const s = ACTIVITY_STYLE[a.type] || ACTIVITY_FALLBACK;
-          const Icon = s.icon;
-          const to = a.related_module && a.related_record_id
-            ? `/records/${a.related_module}/${a.related_record_id}`
-            : null;
-          const inner = (
-            <div className="flex items-center gap-2.5 px-2.5 py-[7px] min-w-0">
-              <div className="w-[30px] h-[30px] rounded-[9px] flex items-center justify-center shrink-0"
-                style={{ background: s.soft, color: s.c }}>
-                <Icon className="w-4 h-4" strokeWidth={2} />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="text-[12px] font-semibold truncate leading-tight" style={{ color: 'var(--color-ink)' }}>
-                  {a.title || 'Untitled'}
-                </div>
-                <div className="text-[11px] mt-0.5 flex items-center gap-1.5 truncate" style={{ color: 'var(--color-muted)' }}>
-                  <span className="capitalize">{a.type}</span>
-                  {a.related_module && <>·<span className="truncate">{RELATED_LABEL[a.related_module] || a.related_module}</span></>}
-                </div>
-              </div>
-              <span className="text-[11px] shrink-0 tabular-nums" style={{ color: 'var(--color-faint)' }}>
-                {relativeTime(a.activity_date)}
-              </span>
-            </div>
-          );
-          return to
-            ? <Link key={`${a.type}-${a.id}`} to={to} className="dash-row block">{inner}</Link>
-            : <div key={`${a.type}-${a.id}`} className="dash-row">{inner}</div>;
-        })}
-        {filtered.length === 0 && (
-          <p className="text-[12px] py-4 text-center sm:col-span-2" style={{ color: 'var(--color-muted)' }}>Nothing logged yet.</p>
-        )}
-      </div>
-    </div>
+    <Panel title="Top Performers" subtitle={`Ranked by ${tp.basis.toLowerCase()} · ${tp.period_label}`} icon={Medal} accent={COLORS.amber}
+      action={<ViewLink to={reportTo} />}>
+      {tp.rows.length === 0 ? <Empty>No deals won in this period.</Empty> : (
+        <ol className="flex flex-col gap-1">
+          {tp.rows.map((r, i) => {
+            const to = drillHref(r, ctx);
+            const [bg, fg] = RANK_TINT[i] || RANK_TINT[4];
+            return (
+              <li key={r.rep} className="flex items-center gap-2.5 px-1.5 py-1.5 rounded-[10px] hover:bg-[var(--color-brand-faint)]">
+                <span className="w-6 h-6 rounded-md text-[11px] font-bold flex items-center justify-center shrink-0 tabular-nums" style={{ background: bg, color: fg }}>{i + 1}</span>
+                <span className="w-7 h-7 rounded-full text-[10px] font-bold flex items-center justify-center shrink-0" style={{ background: COLORS.purple.soft, color: COLORS.purple.c }}>{initialsOf(r.name)}</span>
+                <DLink to={to} className="flex-1 min-w-0 truncate text-[12.5px] font-medium px-1" style={{ color: 'var(--color-ink)' }}
+                  label={`${r.name}: won opportunities`}>{r.name}</DLink>
+                <DLink to={to} className="text-[12.5px] font-bold tabular-nums px-1" style={{ color: 'var(--color-ink)' }}
+                  label={`${r.name}: ${inr(r.value)} won`}>{inrShort(r.value)}</DLink>
+                <DLink to={to} className="text-[11px] tabular-nums w-14 text-right px-1" style={{ color: 'var(--color-muted)' }}
+                  label={`${r.name}: ${r.won} deals won`}>{r.won} won</DLink>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+    </Panel>
   );
 }
 
-// A single horizontal strip, never a wrapping block. Each item links to the
-// module it's actually about — the previous version sent every one of them
-// to /leads regardless of what it said, so "3 subscriptions renewing" opened
-// the leads list. On a narrow screen this scrolls sideways rather than
-// stacking into four rows that push the whole dashboard down.
-const SEVERITY_STYLE = {
-  high: { bg: 'var(--color-danger-soft)', fg: 'var(--color-danger-strong)', label: 'High' },
-  medium: { bg: 'var(--color-warning-soft)', fg: 'var(--color-warning-strong)', label: 'Medium' },
-};
-
-function AttentionBar({ items }) {
-  if (!items || items.length === 0) return null;
+function SupportLoad({ s, ctx }) {
+  if (!s) return <Panel title="Support Load" icon={LifeBuoy} accent={COLORS.rose}><Empty><Locked /></Empty></Panel>;
+  const total = s.open.count;
+  const rows = s.by_priority;
   return (
-    <div className="rounded-xl px-3 flex items-center gap-3 mt-3 dash-enter"
-      style={{ background: '#FFFCF3', border: '1px solid #F3E8C1', minHeight: 46 }}>
-      <div className="flex items-center gap-2 shrink-0">
-        <AlertTriangle className="w-4 h-4 shrink-0" style={{ color: 'var(--color-warning)' }} strokeWidth={2} />
-        <span className="text-[12px] font-bold hidden sm:block" style={{ color: 'var(--color-ink)' }}>Needs attention</span>
-      </div>
-      <div className="flex items-center gap-2 flex-1 min-w-0 overflow-x-auto thin-scroll py-2">
-        {items.map((a, i) => {
-          const s = SEVERITY_STYLE[a.severity] || SEVERITY_STYLE.medium;
-          return (
-            <Link key={i} to={a.link || '/'}
-              className="group inline-flex items-center gap-2 pl-1.5 pr-2 py-1 rounded-full shrink-0 whitespace-nowrap transition-colors"
-              style={{ background: '#FFFFFF', border: '1px solid var(--color-line)' }}>
-              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full"
-                style={{ background: s.bg, color: s.fg }}>{s.label}</span>
-              <span className="text-[11.5px]" style={{ color: 'var(--color-ink)' }}>{a.text}</span>
-              <ChevronRight className="w-3 h-3 transition-transform group-hover:translate-x-0.5"
-                style={{ color: 'var(--color-disabled)' }} />
-            </Link>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function CrmDashboardSection({ data }) {
-  const c = data.cards;
-  const counts = data.agenda_counts || {};
-  return (
-    <>
-      <AttentionBar items={data.attention} />
-
-      <SectionLabel>Pipeline at a glance</SectionLabel>
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3.5">
-        <KpiCard index={0} label="Total Leads" value={c.total_leads} trend={formatTrend(data.trends?.total_leads)} icon={Users} color={COLORS.purple} to="/leads" />
-        <KpiCard index={1} label="Pipeline Value" value={inr(c.pipeline_value)} trend={formatTrend(data.trends?.pipeline_value)} icon={Target} color={COLORS.teal} to="/records/opportunities" />
-        <KpiCard index={2} label="Open Opportunities" value={c.open_opportunities} trend={formatTrend(data.trends?.open_opportunities)} icon={TrendingUp} color={COLORS.amber} to="/records/opportunities" />
-        <KpiCard index={3} label="Won This Month" value={inr(c.won_revenue_month)} sub={`${c.lost_this_month} lost this month`} icon={Trophy} color={COLORS.emerald} to="/records/opportunities" />
-        <KpiCard index={4} label="Follow-ups Due" value={c.followups_due_today} sub={`${c.followups_overdue} overdue`} icon={CalendarClock} color={COLORS.rose} to="/leads" />
-      </div>
-
-      <SectionLabel>On today</SectionLabel>
-      <div className="grid md:grid-cols-3 gap-3.5">
-        <AgendaCard index={0} title="Follow-ups" icon={CalendarClock} accent={COLORS.purple}
-          items={data.agenda?.follow_ups} total={counts.follow_ups} noun="today" viewAll="/leads"
-          render={(f) => ({ title: f.title, phone: f.mobile, meta: f.mobile || f.status, to: `/leads/${f.id}` })}
-          empty="No follow-ups scheduled for today."
-          cta={{ to: '/leads', label: 'View all leads' }} />
-        <AgendaCard index={1} title="Meetings" icon={Users} accent={COLORS.blue}
-          items={data.agenda?.meetings} total={counts.meetings} noun="today" viewAll="/records/meetings"
-          render={(m) => ({
-            title: m.title,
-            icon: CalendarClock,
-            meta: m.related_module ? (RELATED_LABEL[m.related_module] || m.related_module) : 'Meeting',
-            time: m.start_datetime ? String(m.start_datetime).slice(11, 16) : '',
-            // Always openable now. Previously a meeting with no linked
-            // record rendered as a dead row you could click forever.
-            to: `/records/meetings/${m.id}`,
-          })}
-          empty="Nothing in the diary today."
-          cta={{ to: '/records/meetings', label: 'Schedule a meeting' }} />
-        <AgendaCard index={2} title="Tasks due" icon={CheckSquare} accent={COLORS.purple}
-          items={data.agenda?.tasks_due} total={counts.tasks_due} noun="due" viewAll="/records/tasks"
-          render={(t) => ({
-            title: t.title,
-            meta: t.priority ? `${t.priority} priority` : null,
-            dotTone: PRIORITY_TONE[t.priority],
-            // Tasks were the one list on this page that went nowhere.
-            to: `/records/tasks/${t.id}`,
-          })}
-          empty="No tasks due."
-          cta={{ to: '/records/tasks', label: 'Create a task' }} />
-      </div>
-
-      {data.performance && (
+    <Panel title="Support Load" icon={LifeBuoy} accent={COLORS.rose}
+      subtitle={<DLink to={drillHref(s.open, ctx)} className="dash-above hover:underline" style={{ color: 'var(--color-muted)' }}>{total} open ticket{total === 1 ? '' : 's'}</DLink>}
+      action={<ViewLink to={drillHref(s.open, ctx)}>View tickets</ViewLink>}>
+      {total === 0 ? <Empty>No open tickets. Queue is clear.</Empty> : (
         <>
-          <SectionLabel>Performance</SectionLabel>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3.5">
-            {/* Every one of these now opens the deals list — a number you
-                can't drill into is a dead end, which is what these four
-                were. */}
-            <KpiCard index={0} label="Deals won" value={data.performance.won} icon={Trophy} color={COLORS.emerald} to="/records/opportunities" />
-            <KpiCard index={1} label="Deals lost" value={data.performance.lost} icon={AlertTriangle} color={COLORS.rose} to="/records/opportunities" />
-            <KpiCard index={2} label="Win rate" value={data.performance.win_rate === null ? '—' : `${data.performance.win_rate}%`}
-              icon={TrendingUp} color={COLORS.purple} to="/records/opportunities" />
-            <KpiCard index={3} label="Avg deal size" value={inr(data.performance.avg_deal_size)} icon={IndianRupee} color={COLORS.blue} to="/records/opportunities" />
+          <div className="flex h-3 rounded-full overflow-hidden gap-[2px]" role="list" aria-label="Open tickets by priority">
+            {rows.filter((r) => r.count > 0).map((r) => (
+              <Link key={r.priority} role="listitem" to={drillHref(r, ctx)} onClick={rememberScroll}
+                className="dash-link block h-full" style={{ width: `${(r.count / total) * 100}%`, background: PRIORITY_TONE[r.priority] || '#94A3B8', borderRadius: 0 }}
+                aria-label={`${r.priority}: ${r.count} open tickets`} title={`${r.priority}: ${r.count}`} />
+            ))}
           </div>
-          {data.performance.win_rate === null && (
-            <p className="text-[11px] mt-2" style={{ color: 'var(--color-muted)' }}>No deals have closed yet, so a win rate can't be calculated.</p>
-          )}
+          <ul className="flex flex-col gap-0.5 mt-3">
+            {rows.map((r) => (
+              <li key={r.priority}>
+                <DLink to={drillHref(r, ctx)} className="flex items-center justify-between px-1.5 py-1.5 text-[12.5px]" label={`${r.priority}: ${r.count} open tickets`}>
+                  <span className="flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full" style={{ background: PRIORITY_TONE[r.priority] || '#94A3B8' }} />
+                    <span style={{ color: 'var(--color-ink)' }}>{r.priority === 'Unset' ? 'Not set' : r.priority}</span>
+                  </span>
+                  <span className="flex items-center gap-1 font-semibold tabular-nums" style={{ color: 'var(--color-ink)' }}>
+                    {r.count} <ChevronRight className="w-3.5 h-3.5" style={{ color: 'var(--color-disabled)' }} />
+                  </span>
+                </DLink>
+              </li>
+            ))}
+          </ul>
         </>
       )}
+    </Panel>
+  );
+}
 
-      <SectionLabel>Where things stand</SectionLabel>
-      <div className="grid lg:grid-cols-3 gap-3.5">
-        <Panel title="Pipeline by Stage" subtitle="Deal count and value per stage" height={CHART_HEIGHT} index={0}
-          accent={COLORS.blue} action={<ViewAll to="/records/opportunities/kanban" />}>
-          <div className="flex-1 min-h-0 overflow-hidden">
-            <ChartFrame height={168}>
-              <StageDonut stages={data.opportunities_by_stage} />
-            </ChartFrame>
-          </div>
-        </Panel>
+// ---------------------------------------------------------------------------
+// Latest activity
+// ---------------------------------------------------------------------------
+const ACTIVITY_STYLE = {
+  call: { icon: PhoneCall, c: '#3B82F6', soft: '#EFF6FF' },
+  meeting: { icon: CalendarDays, c: '#6C4FF7', soft: '#F0EDFF' },
+  task: { icon: CheckSquare, c: '#3B82F6', soft: '#EFF6FF' },
+  note: { icon: StickyNote, c: '#14B8A6', soft: '#ECFDF9' },
+  quote: { icon: FileText, c: '#8B5CF6', soft: '#F5F3FF' },
+  payment: { icon: IndianRupee, c: '#10B981', soft: '#ECFDF5' },
+  lead: { icon: UserPlus, c: '#F43F5E', soft: '#FFF1F2' },
+  ticket: { icon: Ticket, c: '#F97316', soft: '#FFF7ED' },
+  subscription: { icon: Repeat, c: '#10B981', soft: '#ECFDF5' },
+};
 
-        <Panel title="Monthly Revenue Trend" subtitle="Payments collected, last 6 months" height={CHART_HEIGHT} index={1}
-          accent={COLORS.purple} action={<ViewAll to="/records/subscriptions" />}>
-          <div className="flex-1 min-h-0">
-            <ChartFrame height={220}>
-              <RevenueArea data={data.revenue_by_month} />
-            </ChartFrame>
-          </div>
-        </Panel>
-
-        <Panel title="Leads by Source" subtitle="Top 5 sources by lead count" height={CHART_HEIGHT} index={2}
-          accent={COLORS.rose} action={<ViewAll to="/leads" />}>
-          <SourceBars sources={data.leads_by_source} />
-        </Panel>
+function LatestActivity({ items, viewAll }) {
+  return (
+    <section className="dash-card p-4" aria-label="Latest activity">
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-[15px] font-bold flex items-center gap-2" style={{ color: 'var(--color-ink)' }}>
+          <Zap className="w-5 h-5" style={{ color: 'var(--color-brand)' }} /> Latest Activity
+        </h2>
+        <ViewAllMenu items={viewAll} />
       </div>
+      {items.length === 0 ? <div className="mt-3"><Empty>Nothing logged yet.</Empty></div> : (
+        <ul className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1 mt-3">
+          {items.map((a) => {
+            const s = ACTIVITY_STYLE[a.type] || ACTIVITY_STYLE.task;
+            const Icon = s.icon;
+            return (
+              <li key={`${a.type}-${a.id}`} className="relative min-w-0 flex items-center gap-3 px-2 py-2 rounded-[10px] hover:bg-[var(--color-brand-faint)]">
+                <span className="w-9 h-9 rounded-full flex items-center justify-center shrink-0" style={{ background: s.soft, color: s.c }}>
+                  <Icon className="w-4 h-4" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <Link to={a.path} onClick={rememberScroll} className="dash-stretch block text-[12.5px] font-semibold truncate focus:outline-none" style={{ color: 'var(--color-ink)' }}>
+                    {a.label}<span className="font-normal" style={{ color: 'var(--color-muted)' }}> · {a.title}</span>
+                  </Link>
+                  <div className="text-[11px] truncate">{a.related ? <RelatedLink related={a.related} /> : <span style={{ color: 'var(--color-faint)' }}>—</span>}</div>
+                </div>
+                <span className="text-[11px] shrink-0 tabular-nums" style={{ color: 'var(--color-faint)' }}>{relativeTime(a.at)}</span>
+                <ChevronRight className="w-4 h-4 shrink-0" style={{ color: 'var(--color-disabled)' }} />
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
 
-      <SectionLabel>Money &amp; workload</SectionLabel>
-      <div className="grid lg:grid-cols-3 gap-3.5">
-        <CollectionsCard collections={data.collections} index={0} />
-        <LeaderboardCard leaderboard={data.leaderboard} index={1} />
-        <SupportCard ticketLoad={data.ticket_load} index={2} />
-      </div>
-
-      <SectionLabel>Latest activity</SectionLabel>
-      <RecentActivity activities={data.recent_activities} />
-
-      {/* Page end. A deliberate closing strip rather than the content simply
-          stopping — and, being full width and outside every grid, it is the
-          one element on the page that cannot be stretched taller by a CRM
-          with more records in it. */}
-      <div className="dash-enter rounded-[14px] mt-4 mb-1 px-5 text-white relative overflow-hidden flex items-center gap-4 flex-wrap"
-        style={{
-          background: 'linear-gradient(100deg, #5137D9, #6C4FF7, #8B5CF6)',
-          minHeight: 56,
-          '--stagger': '140ms',
-        }}>
-        <div className="absolute inset-0 opacity-[0.08]" style={{
-          backgroundImage: 'radial-gradient(circle at 2px 2px, white 1px, transparent 0)', backgroundSize: '22px 22px',
-        }} />
-        <div aria-hidden="true" className="absolute -top-16 -right-10 w-56 h-56 rounded-full pointer-events-none animate-[dash-drift_9s_ease-in-out_infinite]"
-          style={{ background: 'radial-gradient(circle, rgba(255,255,255,.16), transparent 70%)' }} />
-        <div aria-hidden="true" className="absolute -bottom-24 left-1/3 w-64 h-64 rounded-full pointer-events-none animate-[dash-drift_11s_ease-in-out_infinite_reverse]"
-          style={{ background: 'radial-gradient(circle, rgba(255,255,255,.12), transparent 70%)' }} />
-        <div className="relative w-8 h-8 rounded-[10px] flex items-center justify-center shrink-0" style={{ background: 'rgba(255,255,255,.16)' }}>
-          <Send className="w-4 h-4" strokeWidth={2} />
-        </div>
-        <div className="relative min-w-0 flex-1 py-3">
-          <h3 className="font-bold text-[13px]" style={{ fontFamily: 'var(--font-display)' }}>Keep the momentum going</h3>
-          <p className="text-white/75 text-[11px] mt-0.5">More conversations. More opportunities. A greater tomorrow.</p>
-        </div>
-        <div className="relative flex gap-2 shrink-0 py-3">
-          <Link to="/leads" className="text-[12px] font-semibold px-3 py-1.5 rounded-lg transition-colors"
-            style={{ background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.25)' }}>Work my leads</Link>
-          <Link to="/records/opportunities/kanban" className="text-[12px] font-semibold px-3 py-1.5 rounded-lg transition-opacity hover:opacity-90"
-            style={{ background: '#FFFFFF', color: '#5137D9' }}>Open pipeline</Link>
-        </div>
-      </div>
-    </>
+// ---------------------------------------------------------------------------
+// Page
+// ---------------------------------------------------------------------------
+function DashboardSkeleton() {
+  const block = (h) => <div className="rounded-2xl animate-pulse" style={{ height: h, background: 'var(--color-canvas-alt)' }} />;
+  return (
+    <div className="max-w-[1600px] mx-auto space-y-4" aria-busy="true" aria-label="Loading dashboard">
+      {block(64)}{block(150)}{block(120)}{block(130)}{block(280)}
+    </div>
   );
 }
 
 export default function Dashboard() {
   const { user } = useAuth();
-  const [crmData, setCrmData] = useState(null);
+  const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
+  const ctx = useMemo(() => ({
+    owner: params.get('owner') || '', team: params.get('team') || '', period: params.get('period') || 'this_month',
+  }), [params]);
+  const [data, setData] = useState(null);
   const [error, setError] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
+  const restored = useRef(false);
 
+  const load = useCallback(() => {
+    setError(null);
+    setRefreshing(true);
+    api.dashboardCrm({ owner: ctx.owner || undefined, team: ctx.team || undefined, period: ctx.period })
+      .then(setData)
+      .catch((e) => setError(friendlyError(e, 'Could not load the dashboard.')))
+      .finally(() => setRefreshing(false));
+  }, [ctx.owner, ctx.team, ctx.period]);
+  useEffect(() => { load(); }, [load]);
+
+  // Back from a drill-down: return to where the user was.
   useEffect(() => {
-    api.dashboardCrm().then(setCrmData).catch((e) => setError(friendlyError(e, 'Could not load the dashboard.')));
-  }, []);
+    if (!data || restored.current) return;
+    restored.current = true;
+    try {
+      const y = sessionStorage.getItem(RETURN_KEY);
+      if (y !== null) {
+        sessionStorage.removeItem(RETURN_KEY);
+        requestAnimationFrame(() => window.scrollTo(0, Number(y) || 0));
+      }
+    } catch { /* storage unavailable */ }
+  }, [data]);
 
-  if (error) {
+  const setScope = (v) => {
+    const next = new URLSearchParams(params);
+    next.delete('owner'); next.delete('team');
+    if (v.startsWith('u:')) next.set('owner', v.slice(2));
+    if (v.startsWith('t:')) next.set('team', v.slice(2));
+    setParams(next, { replace: true });
+  };
+  const setPeriod = (v) => {
+    const next = new URLSearchParams(params);
+    if (v === 'this_month') next.delete('period'); else next.set('period', v);
+    setParams(next, { replace: true });
+  };
+
+  if (error && !data) {
     return (
-      <div className="max-w-[1600px] mx-auto p-8 text-center">
+      <div className="max-w-[1600px] mx-auto p-8 text-center dash-card" role="alert">
         <p className="t-section mb-1">{error.message}</p>
-        <button onClick={() => window.location.reload()} className="btn btn-primary mx-auto mt-3">Retry</button>
+        <p className="t-meta">The figures could not be loaded, so none are shown rather than showing zeros.</p>
+        <button type="button" onClick={load} className="btn btn-primary mx-auto mt-3 inline-flex items-center gap-1.5">
+          <RefreshCw className="w-4 h-4" /> Retry
+        </button>
       </div>
     );
   }
-  if (!crmData) return <div className="p-8 text-slate-400">Loading…</div>;
+  if (!data) return <DashboardSkeleton />;
 
-  const hour = new Date().getHours();
+  const hour = Number(new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hour12: false, timeZone: data.timezone }).format(new Date()));
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
-  const today = new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  const todayLabel = new Date(`${data.today}T00:00:00`).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  const monthLabel = new Date(`${data.today}T00:00:00`).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+  const k = data.kpis;
+  const periodReport = { this_month: 'this-month', last_month: 'last-month', all_time: 'all' }[ctx.period];
+  const report = (key) => `/reports?report=${key}${periodReport ? `&preset=${periodReport}` : ''}`;
+  const staleNote = error && (
+    <div className="mt-3 text-[12px] rounded-lg px-3 py-2 flex items-center justify-between gap-2" role="alert"
+      style={{ background: 'var(--color-danger-soft)', color: '#E11D48' }}>
+      Could not refresh: {error.message}. The figures below are from the previous load.
+      <button type="button" className="underline" onClick={load}>Retry</button>
+    </div>
+  );
 
   return (
-    <div className="relative max-w-[1600px] mx-auto rounded-3xl -m-4 sm:-m-6 p-4 sm:p-6"
-      style={{ background: 'radial-gradient(ellipse 1400px 500px at top, var(--color-brand-soft), transparent 60%)' }}>
-
-      {/* ===== Background treatment =====
-          Three layers, all decorative, all behind the content:
-
-          1. A fine dot grid — gives the canvas texture so white cards read
-             as sitting ON something rather than floating in a void. Kept
-             very low contrast; at normal viewing distance you register it
-             as "not flat" rather than consciously seeing dots.
-          2. Two soft colour blooms in the brand hues, top-right and
-             bottom-left, so the page has warmth and a sense of depth.
-          3. A large outline watermark of the brand mark, bottom-right.
-
-          Every layer is `pointer-events-none` and sits at a negative
-          z-index so it can never intercept a click or overlap text — a
-          watermark that interferes with the UI is worse than no watermark.
-          All of it is also `aria-hidden`, since none of it carries meaning
-          for a screen reader. */}
-      <div aria-hidden="true" className="absolute inset-0 -z-10 overflow-hidden rounded-3xl pointer-events-none">
-        <div className="absolute inset-0 opacity-[0.5]" style={{
-          backgroundImage: 'radial-gradient(circle at 1px 1px, rgba(79,70,229,0.07) 1px, transparent 0)',
-          backgroundSize: '26px 26px',
-        }} />
-        <div className="absolute -top-24 -right-24 w-[460px] h-[460px] rounded-full" style={{
-          background: 'radial-gradient(circle, rgba(124,58,237,0.10), transparent 68%)',
-        }} />
-        <div className="absolute -bottom-32 -left-20 w-[420px] h-[420px] rounded-full" style={{
-          background: 'radial-gradient(circle, rgba(37,99,235,0.09), transparent 68%)',
-        }} />
-        <svg viewBox="0 0 200 200" className="absolute bottom-6 right-8 w-[260px] h-[260px] opacity-[0.035]">
-          <path d="M100 18 L168 56 L168 132 L100 170 L32 132 L32 56 Z" fill="none" stroke="#4F46E5" strokeWidth="5" />
-          <path d="M100 54 L136 74 L136 114 L100 134 L64 114 L64 74 Z" fill="none" stroke="#4F46E5" strokeWidth="5" />
-          <circle cx="100" cy="94" r="13" fill="#4F46E5" />
-        </svg>
-      </div>
-
-      <div className="dash-enter rounded-2xl px-5 py-4 relative overflow-hidden flex items-center"
-        style={{
-          background: 'linear-gradient(110deg, #F0EDFF 0%, #F7F8FC 55%, #FFFFFF 100%)',
-          border: '1px solid var(--color-line)',
-          minHeight: 96,
-        }}>
-        {/* Soft depth wash behind the content — a flat pastel panel is what
-            made this strip read as empty. Sits behind everything and is
-            pointer-events-none so it can never interfere. */}
-        <div aria-hidden="true" className="absolute inset-0 pointer-events-none"
-          style={{ background: 'radial-gradient(circle 420px at 78% 20%, rgba(129,140,248,0.2), transparent 70%)' }} />
-        <div aria-hidden="true" className="absolute -top-20 -left-16 w-64 h-64 rounded-full pointer-events-none animate-[dash-drift_10s_ease-in-out_infinite]"
-          style={{ background: 'radial-gradient(circle, rgba(124,58,237,0.10), transparent 70%)' }} />
-
-        <div className="relative flex items-center justify-between flex-wrap gap-4 w-full">
-          <div className="min-w-0">
-            <h1 className="dash-figure font-display text-[21px] font-bold leading-tight" style={{ fontFamily: 'var(--font-display)' }}>
+    <div className="relative max-w-[1600px] mx-auto">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-3">
+          <Sun className="w-9 h-9 shrink-0" style={{ color: '#F59E0B' }} aria-hidden="true" />
+          <div>
+            <h1 className="text-[20px] font-bold leading-tight" style={{ color: 'var(--color-ink)', fontFamily: 'var(--font-display)' }}>
               {greeting}, {user?.full_name?.split(' ')[0] || user?.username || 'there'}
             </h1>
-            <p className="text-[12.5px] mt-1" style={{ color: 'var(--color-muted)' }}>
-              Here's what's happening with your CRM today.
-            </p>
-          </div>
-
-          {/* Illustration and quote sit side by side in their own flex zone
-              rather than one being absolutely positioned over the other. */}
-          <div className="hidden lg:flex items-center gap-3 shrink-0 ml-auto">
-            <svg aria-hidden="true" viewBox="0 0 170 96" className="w-[110px] h-[62px] shrink-0">
-              <ellipse cx="85" cy="88" rx="72" ry="7" fill="#C7D2FE" opacity="0.35" />
-              <path d="M0 88 L42 34 L64 58 L96 16 L170 88 Z" fill="#DDE3FF" />
-              <path d="M52 88 L96 16 L140 88 Z" fill="#C7D2FE" />
-              <path d="M83 31 L96 16 L109 31 L101 27 L96 32 L91 27 Z" fill="#FFFFFF" />
-              <rect x="95" y="6" width="1.8" height="22" rx="0.9" fill="#4338CA" />
-              <path d="M96.8 6 L114 11.5 L96.8 17 Z" fill="#4F46E5" />
-              <circle cx="34" cy="26" r="3" fill="#A5B4FC" opacity="0.8" />
-              <circle cx="146" cy="34" r="2.2" fill="#A5B4FC" opacity="0.7" />
-            </svg>
-            <p className="text-[11px] italic leading-snug max-w-[140px]" style={{ color: 'var(--color-muted)' }}>
-              "Small steps today, big results tomorrow."
-            </p>
-          </div>
-
-          <div className="flex items-center gap-2 rounded-[10px] px-3 py-2 shrink-0"
-            style={{ background: '#FFFFFF', border: '1px solid var(--color-line)' }}>
-            <span className="w-6 h-6 rounded-md flex items-center justify-center shrink-0"
-              style={{ background: 'var(--color-brand-soft)', color: 'var(--color-brand)' }}>
-              <CalendarClock className="w-3.5 h-3.5" strokeWidth={2} />
-            </span>
-            <span className="text-[13px] font-semibold" style={{ color: 'var(--color-ink)' }}>{today}</span>
+            <p className="text-[12.5px]" style={{ color: 'var(--color-muted)' }}>Here is what needs your attention today.</p>
           </div>
         </div>
+        <div className="flex items-center gap-2.5 flex-wrap">
+          {refreshing && <RefreshCw className="w-4 h-4 animate-spin" style={{ color: 'var(--color-faint)' }} aria-label="Refreshing" />}
+          <span className="text-[13px] font-medium" style={{ color: 'var(--color-ink)' }}>{todayLabel}</span>
+          <ScopeSelect data={data} ctx={ctx} onChange={setScope} />
+        </div>
+      </div>
+      {data.scope && (
+        <p className="text-[12px] mt-2" style={{ color: 'var(--color-muted)' }}>
+          Showing figures for {data.scope.label[0].toLowerCase()} <b style={{ color: 'var(--color-ink)' }}>{data.scope.label[1]}</b>.{' '}
+          <button type="button" className="underline" onClick={() => setScope('')}>Show all teams</button>
+        </p>
+      )}
+      {staleNote}
+
+      <div className="mt-4">
+        <Brief brief={data.brief} ctx={ctx} onReview={() => setReviewing(true)} />
       </div>
 
-      <CrmDashboardSection data={crmData} />
+      <NeedsAttention attention={data.attention} ctx={ctx} windows={data.windows} />
+
+      <SectionLabel action={(
+        <ViewAllMenu items={[
+          { label: 'Leads', to: drillHref(k.total_leads, ctx), count: k.total_leads.count },
+          { label: 'Open opportunities', to: drillHref(k.open_opportunities, ctx), count: k.open_opportunities.count },
+          { label: 'Won this month', to: drillHref(k.won_this_month, ctx), count: k.won_this_month.count },
+          ...k.overdue_actions.parts.map((p) => ({ label: p.label, to: drillHref(p, ctx), count: p.count })),
+        ]} />
+      )}>Pipeline at a glance</SectionLabel>
+      <KeyMetrics k={k} ctx={ctx} monthLabel={monthLabel} />
+
+      <SectionLabel action={<ViewLink to="/calendar">Open today&apos;s calendar</ViewLink>}>Today&apos;s Activities</SectionLabel>
+      <div className="grid lg:grid-cols-3 gap-3.5">
+        <FollowupsCard f={data.today_activities.followups} ctx={ctx} />
+        <MeetingsCard m={data.today_activities.meetings} ctx={ctx} />
+        <TasksCard t={data.today_activities.tasks} ctx={ctx} />
+      </div>
+
+      <SectionLabel action={(
+        <>
+          <label className="sr-only" htmlFor="dash-period">Reporting period</label>
+          <select id="dash-period" value={ctx.period} onChange={(e) => setPeriod(e.target.value)}
+            className="text-[12px] rounded-lg px-2 py-1 cursor-pointer" style={{ border: '1px solid var(--color-line)', background: '#FFFFFF', color: 'var(--color-ink)' }}>
+            {Object.entries(data.periods).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+          </select>
+          <ViewAllMenu items={[
+            { label: 'Sales performance report', to: report('sales-rep-performance') },
+            { label: 'Won / lost analysis', to: report('won-lost-analysis') },
+            { label: 'Deals won', to: drillHref(data.performance.won, ctx), count: data.performance.won?.count },
+            { label: 'Deals lost', to: drillHref(data.performance.lost, ctx), count: data.performance.lost?.count },
+          ]} />
+        </>
+      )}>
+        Performance
+        <span className="text-[12px] font-normal ml-1" style={{ color: 'var(--color-muted)' }}>{data.performance.period_label}</span>
+      </SectionLabel>
+      <Performance p={data.performance} ctx={ctx} />
+
+      <SectionLabel action={(
+        <ViewAllMenu items={[
+          { label: 'Open opportunities', to: data.pipeline_by_stage && drillHref(data.pipeline_by_stage, ctx) },
+          { label: 'Pipeline by stage report', to: '/reports?report=pipeline-by-stage' },
+          { label: 'Payments received (6 months)', to: data.collections_trend && drillHref(data.collections_trend, ctx) },
+          { label: 'Collections trend report', to: data.collections_trend && '/reports?report=invoice-collection-trend' },
+          { label: 'Leads', to: data.leads_by_source && drillHref(data.leads_by_source, ctx) },
+          { label: 'Lead source performance report', to: data.leads_by_source && '/reports?report=lead-source-performance' },
+        ]} />
+      )}>Where Things Stand</SectionLabel>
+      <div className="grid lg:grid-cols-3 gap-3.5">
+        <PipelineByStage pbs={data.pipeline_by_stage} ctx={ctx} go={navigate} />
+        <CollectionsTrend trend={data.collections_trend} ctx={ctx} go={navigate} />
+        <LeadsBySource lbs={data.leads_by_source} ctx={ctx} />
+      </div>
+
+      <SectionLabel action={(
+        <ViewAllMenu items={[
+          { label: 'Invoices (collections basis)', to: data.collections && drillHref(data.collections.invoiced, ctx) },
+          { label: 'Collections status report', to: data.collections && '/reports?report=collections-status' },
+          { label: 'Sales performance report', to: data.top_performers && report('sales-rep-performance') },
+          { label: 'Open tickets', to: data.support && drillHref(data.support.open, ctx) },
+          { label: 'Tickets by priority report', to: data.support && '/reports?report=tickets-by-priority' },
+        ]} />
+      )}>Money &amp; Workload</SectionLabel>
+      <div className="grid lg:grid-cols-3 gap-3.5">
+        <Collections c={data.collections} ctx={ctx} />
+        <TopPerformers tp={data.top_performers} ctx={ctx} reportTo={report('sales-rep-performance')} />
+        <SupportLoad s={data.support} ctx={ctx} />
+      </div>
+
+      <div className="mt-6 mb-2">
+        <LatestActivity items={data.latest_activity} viewAll={[
+          { label: 'Calls', to: '/records/calls' },
+          { label: 'Meetings', to: '/records/meetings' },
+          { label: 'Tasks', to: '/records/tasks' },
+          { label: 'Quotations', to: '/records/quotations' },
+          { label: 'Payments', to: '/payments' },
+          { label: 'Calendar', to: '/calendar' },
+        ]} />
+      </div>
+
+      {reviewing && <InsightsDrawer brief={data.brief} ctx={ctx} onClose={() => setReviewing(false)} />}
     </div>
   );
 }

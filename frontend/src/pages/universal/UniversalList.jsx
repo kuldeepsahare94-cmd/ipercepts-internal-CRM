@@ -16,6 +16,7 @@ import { cachedLabel } from './lookupCache';
 import { computeFollowupStatus, findFollowupField } from './followupUtils';
 import { kpisFor } from './listKpis';
 import { KpiCard, SkeletonRows, ErrorState, EmptyState, friendlyError } from '../../components/ui';
+import DrillBanner, { useDrill, applyDrill } from '../../components/DrillBanner';
 
 const STATUS_TYPES = new Set(['status', 'contact_status', 'priority']);
 
@@ -96,6 +97,8 @@ export default function UniversalList() {
   const [kpiFilter, setKpiFilter] = useState(null);
   const [fieldErrors, setFieldErrors] = useState({});
   const PAGE_SIZE = 25;
+  // Opened from a dashboard figure: narrow to exactly the records behind it.
+  const drill = useDrill();
 
   useEffect(() => {
     setLoading(true);
@@ -112,9 +115,14 @@ export default function UniversalList() {
 
   const load = () => {
     if (!module) return;
-    api.universalList(module, { q }).then(setRecords).catch((e) => setError(friendlyError(e, 'Unable to load records.')));
+    // While a drill-down is resolving, wait for its ids rather than loading
+    // (and briefly showing) the unfiltered list. The ids are passed to the
+    // API too, so a list endpoint with a row cap still returns every match.
+    if (drill.active && !drill.idSet) return;
+    api.universalList(module, { q, ids: drill.active ? drill.idsParam : undefined })
+      .then(setRecords).catch((e) => setError(friendlyError(e, 'Unable to load records.')));
   };
-  useEffect(() => { load(); }, [module]);
+  useEffect(() => { load(); }, [module, drill.idsParam, drill.active]);
   useEffect(() => { const t = setTimeout(load, 300); return () => clearTimeout(t); }, [q]);
 
   const listFields = useMemo(() => fields.filter((f) => f.show_in_list), [fields]);
@@ -147,20 +155,21 @@ export default function UniversalList() {
   const kpis = useMemo(() => kpisFor(moduleApiName, records), [moduleApiName, records]);
 
   const filtered = useMemo(() => {
-    let rows = statusField && statusFilter
-      ? records.filter((r) => r[statusField.api_name] === statusFilter)
-      : records;
+    let rows = applyDrill(records, drill);
+    rows = statusField && statusFilter
+      ? rows.filter((r) => r[statusField.api_name] === statusFilter)
+      : rows;
     // A KPI tile filter stacks on top of the dropdown filters rather than
     // replacing them, so the two controls compose instead of fighting.
     const active = kpis?.find((k) => k.label === kpiFilter);
     if (active?.filter) rows = rows.filter(active.filter);
     return rows;
-  }, [records, statusField, statusFilter, kpiFilter, kpis]);
+  }, [records, statusField, statusFilter, kpiFilter, kpis, drill.idSet, drill.active]);
 
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pageRows = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-  useEffect(() => { setPage(1); }, [q, statusFilter, kpiFilter, moduleApiName]);
+  useEffect(() => { setPage(1); }, [q, statusFilter, kpiFilter, moduleApiName, drill.metric]);
 
   // Guard order matters. `if (!module) return null` used to run BEFORE the
   // loading check, so while the module was being fetched the page rendered
@@ -336,6 +345,8 @@ export default function UniversalList() {
         </div>
       )}
 
+      <DrillBanner drill={drill} shown={drill.data ? filtered.length : undefined} noun={pluralLabel.toLowerCase()} />
+
       <div className="flex gap-2 mt-5 flex-wrap">
         <div className="relative flex-1 min-w-[220px]">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-faint)]" />
@@ -501,15 +512,20 @@ export default function UniversalList() {
           </tbody>
         </table>
 
-        {filtered.length === 0 && (
+        {drill.active && drill.loading && <div className="p-4"><SkeletonRows rows={4} cols={5} /></div>}
+        {filtered.length === 0 && !(drill.active && (drill.loading || drill.error)) && (
           <div className="py-12 text-center">
             <p className="t-section mb-1">
-              No {pluralLabel.toLowerCase()} {q || statusFilter ? 'match your filters' : 'yet'}
+              {drill.data
+                ? `No ${pluralLabel.toLowerCase()} match these dashboard filters`
+                : `No ${pluralLabel.toLowerCase()} ${q || statusFilter ? 'match your filters' : 'yet'}`}
             </p>
             <p className="t-meta">
-              {q || statusFilter
-                ? 'Try clearing the search or filter.'
-                : `Add your first ${singularLabel.toLowerCase()} to get started.`}
+              {drill.data
+                ? 'Nothing currently meets the criteria above — the dashboard figure is genuinely zero.'
+                : q || statusFilter
+                  ? 'Try clearing the search or filter.'
+                  : `Add your first ${singularLabel.toLowerCase()} to get started.`}
             </p>
           </div>
         )}

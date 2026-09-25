@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { Download, X, Wallet, Plus, Pencil } from 'lucide-react';
 import Avatar from '../components/Avatar';
 import { api } from '../api';
@@ -8,6 +8,7 @@ import StatusBadge from '../components/StatusBadge';
 import { downloadCSV } from '../utils/csv';
 import { PageHeader } from '../components/ui';
 import { UniversalRecordEditModal } from '../components/RecordEditModal';
+import DrillBanner, { useDrill, applyDrill } from '../components/DrillBanner';
 
 const STATUSES = ['Pending', 'Partial', 'Paid', 'Failed'];
 const MODES = ['Cash', 'UPI', 'Bank Transfer', 'Card', 'Cheque', 'Other'];
@@ -131,8 +132,17 @@ export default function Payments() {
   const [creating, setCreating] = useState(false);
   const [editingId, setEditingId] = useState(null);   // payment open in the edit popup
 
-  const load = () => api.listPayments({ status: statusFilter }).then(setList);
+  // Opened from a dashboard figure: narrow to exactly the payments behind it.
+  const drill = useDrill();
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const load = () => api.listPayments({ status: statusFilter })
+    .then((rows) => { setList(rows); setLoadError(''); })
+    .catch((e) => setLoadError(e.message))
+    .finally(() => setLoaded(true));
   useEffect(() => { load(); }, [statusFilter]);
+  const rows = applyDrill(list, drill);
+  const waiting = !loaded || (drill.active && drill.loading);
 
   // Deep-linked (e.g. from a Dashboard link) — open the mark-paid modal directly
   useEffect(() => {
@@ -145,7 +155,15 @@ export default function Payments() {
   const saved = () => { closeModal(); load(); };
   const created = () => { setCreating(false); load(); };
 
-  const reference = (p) => p.opportunity_name || p.quote_number || p.course_name || '—';
+  // What the payment is for, linked to that record where there is one.
+  const reference = (p) => {
+    if (p.subscription_id) return <Link to={`/records/subscriptions/${p.subscription_id}`} className="hover:text-[var(--color-brand)]">{p.subscription_number}{p.product_name ? ` · ${p.product_name}` : ''}</Link>;
+    if (p.document_id) return <Link to={`/records/invoices/${p.document_id}`} className="hover:text-[var(--color-brand)]">Invoice {p.invoice_number}</Link>;
+    if (p.opportunity_id) return <Link to={`/records/opportunities/${p.opportunity_id}`} className="hover:text-[var(--color-brand)]">{p.opportunity_name}</Link>;
+    if (p.quotation_id) return <Link to={`/records/quotations/${p.quotation_id}`} className="hover:text-[var(--color-brand)]">{p.quote_number}</Link>;
+    return p.course_name || '—';
+  };
+  const today = new Date().toLocaleDateString('en-CA');
 
   return (
     <div className="max-w-[1600px] mx-auto">
@@ -157,7 +175,7 @@ export default function Payments() {
       >
         <div className="flex gap-2">
           {can('payments', 'export') && (
-            <button onClick={() => downloadCSV('payments.csv', list)} className="btn btn-secondary">Export CSV</button>
+            <button onClick={() => downloadCSV('payments.csv', rows)} className="btn btn-secondary">Export CSV</button>
           )}
           {can('payments', 'create') && (
             <button onClick={() => setCreating(true)} className="btn btn-primary inline-flex items-center gap-1.5">
@@ -172,7 +190,10 @@ export default function Payments() {
           style={{ background: 'var(--color-danger-soft)', color: 'var(--color-danger)' }}>{downloadError}</div>
       )}
 
-      <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="border border-line rounded-lg px-3 py-2 text-sm mt-5">
+      <DrillBanner drill={drill} shown={drill.data ? rows.length : undefined} noun="payments" />
+
+      <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="border border-line rounded-lg px-3 py-2 text-sm mt-5"
+        aria-label="Filter by status">
         <option value="">All statuses</option>
         {STATUSES.map((s) => <option key={s}>{s}</option>)}
       </select>
@@ -185,15 +206,19 @@ export default function Payments() {
               <th className="py-3 px-4 font-medium">Payer</th>
               <th className="py-3 px-4 font-medium">Reference</th>
               <th className="py-3 px-4 font-medium">Installment</th>
+              <th className="py-3 px-4 font-medium">Due date</th>
+              <th className="py-3 px-4 font-medium">Received</th>
               <th className="py-3 px-4 font-medium text-right">Amount</th>
               <th className="py-3 px-4 font-medium">Status</th>
               <th className="py-3 px-4 font-medium text-right">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {list.map((p) => (
+            {!waiting && rows.map((p) => (
               <tr key={p.id} className="border-b border-line/60 hover:bg-[var(--color-canvas)] transition-colors">
-                <td className="py-3 px-4 text-ink font-medium">{p.payment_number}</td>
+                <td className="py-3 px-4 text-ink font-medium">
+                  <Link to={`/records/payments/${p.id}`} className="hover:text-[var(--color-brand)]">{p.payment_number}</Link>
+                </td>
                 <td className="py-3 px-4 text-slate-600">
                   <div className="flex items-center gap-3">
                     <Avatar name={p.payer_display_name} color="amber" />
@@ -202,6 +227,17 @@ export default function Payments() {
                 </td>
                 <td className="py-3 px-4 text-slate-500">{reference(p)}</td>
                 <td className="py-3 px-4 text-slate-500">#{p.installment_number}</td>
+                <td className="py-3 px-4 whitespace-nowrap">
+                  {p.due_date ? (
+                    <span style={{ color: ['Pending', 'Partial'].includes(p.status) && String(p.due_date).slice(0, 10) < today ? 'var(--color-danger)' : 'var(--color-muted)' }}>
+                      {String(p.due_date).slice(0, 10)}
+                      {['Pending', 'Partial'].includes(p.status) && String(p.due_date).slice(0, 10) < today && ' · overdue'}
+                    </span>
+                  ) : <span className="text-slate-300">—</span>}
+                </td>
+                <td className="py-3 px-4 text-slate-500 whitespace-nowrap">
+                  {['Paid', 'Partial'].includes(p.status) && p.payment_date ? String(p.payment_date).slice(0, 10) : '—'}
+                </td>
                 <td className="py-3 px-4 text-right text-slate-700">{inr(p.amount)}</td>
                 <td className="py-3 px-4"><StatusBadge status={p.status} /></td>
                 <td className="py-3 px-4 text-right whitespace-nowrap">
@@ -233,8 +269,19 @@ export default function Payments() {
                 </td>
               </tr>
             ))}
-            {list.length === 0 && (
-              <tr><td colSpan={7} className="py-8 text-center text-slate-400">No payments yet.</td></tr>
+            {waiting && (
+              <tr><td colSpan={9} className="py-8 text-center text-slate-400" role="status">Loading payments…</td></tr>
+            )}
+            {!waiting && loadError && (
+              <tr><td colSpan={9} className="py-8 text-center" style={{ color: 'var(--color-danger)' }}>
+                Could not load payments: {loadError}{' '}
+                <button type="button" onClick={load} className="underline">Retry</button>
+              </td></tr>
+            )}
+            {!waiting && !loadError && rows.length === 0 && !(drill.active && drill.error) && (
+              <tr><td colSpan={9} className="py-8 text-center text-slate-400">
+                {drill.data ? 'No payments match these dashboard filters — the dashboard figure is genuinely zero.' : 'No payments yet.'}
+              </td></tr>
             )}
           </tbody>
         </table>

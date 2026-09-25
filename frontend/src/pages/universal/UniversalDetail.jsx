@@ -19,6 +19,7 @@ import DisposeLeadModal from '../../components/DisposeLeadModal';
 import DocumentItemsPanel from './DocumentItemsPanel';
 import DocumentActionsPanel from './DocumentActionsPanel';
 import DocumentPaymentsPanel from './DocumentPaymentsPanel';
+import SubscriptionPanels, { CustomerSubscriptions } from './SubscriptionPanels';
 
 // Modules whose records are sales documents: line items, a PDF, a place in a
 // conversion chain.
@@ -896,6 +897,19 @@ export default function UniversalDetail() {
             </p>
           )}
         </div>
+      )}
+
+      {/* Subscription / AMC: overview, payment schedule (Payments module),
+          renewal history, related customer and product/service. */}
+      {module.api_name === 'subscriptions' && (
+        <SubscriptionPanels recordId={id} canRenew={can('subscriptions', 'create')}
+          canViewPayments={can('payments', 'view')} onUpdated={load} />
+      )}
+
+      {/* The customer's subscriptions and AMCs, one row per subscription. */}
+      {module.api_name === 'accounts' && can('subscriptions', 'view') && (
+        <CustomerSubscriptions accountId={Number(id)} accountName={record.account_name}
+          canCreate={can('subscriptions', 'create')} />
       )}
 
       <FollowUpPanel module={module} fields={fields} record={record} onUpdated={load} />

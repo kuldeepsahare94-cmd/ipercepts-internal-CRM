@@ -8,6 +8,7 @@ import { api } from '../api';
 import { usePermissions } from '../context/usePermissions';
 import { downloadCSV } from '../utils/csv';
 import LeadEditModal from '../components/LeadEditModal';
+import DrillBanner, { useDrill, applyDrill } from '../components/DrillBanner';
 import {
   PageHeader, KpiCard, Badge, Avatar, SkeletonRows, SkeletonCards, ErrorState, EmptyState, toneFor,
   friendlyError,
@@ -415,6 +416,8 @@ export default function Leads() {
   const [q, setQ] = useState('');
   const [addFor, setAddFor] = useState(null);
   const [editingId, setEditingId] = useState(null);   // lead being edited in the popup
+  // Opened from a dashboard figure: narrow to exactly the leads behind it.
+  const drill = useDrill();
 
   const load = () => {
     setError(null);
@@ -441,10 +444,10 @@ export default function Leads() {
   );
 
   // Source/owner filter client-side; status and search go to the API.
-  const filtered = useMemo(() => list.filter((l) => (
+  const filtered = useMemo(() => applyDrill(list, drill).filter((l) => (
     (!sourceFilter || l.source === sourceFilter) &&
     (!ownerFilter || l.assigned_counselor === ownerFilter)
-  )), [list, sourceFilter, ownerFilter]);
+  )), [list, sourceFilter, ownerFilter, drill.idSet, drill.active]);
 
   const kpis = useMemo(() => {
     const by = (s) => list.filter((l) => l.status === s).length;
@@ -531,17 +534,22 @@ export default function Leads() {
         )}
       </div>
 
-      {loading && <SkeletonRows rows={6} cols={6} />}
+      <DrillBanner drill={drill} shown={drill.data ? filtered.length : undefined} noun="leads" />
+      {drill.active && drill.data && <div className="mb-4" />}
+
+      {(loading || (drill.active && drill.loading)) && <SkeletonRows rows={6} cols={6} />}
 
       {!loading && error && (
         <ErrorState message="Unable to load leads." detail={error} onRetry={() => { setLoading(true); load(); }} />
       )}
 
-      {!loading && !error && filtered.length === 0 && (
-        <EmptyState icon={UsersIcon} title="No leads found"
-          description={q || statusFilter || sourceFilter || ownerFilter
-            ? 'No leads match your current filters. Try clearing them.'
-            : 'Leads you add or capture will appear here.'}>
+      {!loading && !error && !(drill.active && (drill.loading || drill.error)) && filtered.length === 0 && (
+        <EmptyState icon={UsersIcon} title={drill.data ? 'No leads match these dashboard filters' : 'No leads found'}
+          description={drill.data
+            ? 'Nothing currently meets the criteria above — the dashboard figure is genuinely zero.'
+            : q || statusFilter || sourceFilter || ownerFilter
+              ? 'No leads match your current filters. Try clearing them.'
+              : 'Leads you add or capture will appear here.'}>
           {can('leads', 'create') && (
             <button onClick={() => setAddFor('New')} className="btn btn-primary mx-auto">
               <UserPlus className="w-4 h-4" /> Add Lead
@@ -550,12 +558,12 @@ export default function Leads() {
         </EmptyState>
       )}
 
-      {!loading && !error && filtered.length > 0 && view === 'kanban' && (
+      {!loading && !error && !(drill.active && drill.loading) && filtered.length > 0 && view === 'kanban' && (
         <KanbanBoard leads={filtered} onAdd={setAddFor} canCreate={can('leads', 'create')}
           canEdit={can('leads', 'edit')} onMoved={load} />
       )}
 
-      {!loading && !error && filtered.length > 0 && view === 'list' && (
+      {!loading && !error && !(drill.active && drill.loading) && filtered.length > 0 && view === 'list' && (
         <div className="card overflow-hidden">
           <div className="overflow-x-auto thin-scroll">
             <table className="w-full text-sm">

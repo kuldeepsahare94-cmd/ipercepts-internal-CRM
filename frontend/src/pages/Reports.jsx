@@ -19,6 +19,7 @@
  * reports, colour is how you keep your place.
  */
 import { useCallback, useEffect, useMemo, useState, lazy, Suspense } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   BarChart3, Download, Printer, Search, Wand2, Trash2, Star, RefreshCw, ChevronLeft, Table2,
 } from 'lucide-react';
@@ -178,6 +179,25 @@ export default function Reports() {
     setFrom(r.from);
     setTo(r.to);
   };
+
+  // Deep link: /reports?report=<key>&preset=<preset> or &from=&to= opens that
+  // report directly with the period applied — used by the Dashboard's "View
+  // all" links so they land on the matching report, not the catalogue.
+  const [params] = useSearchParams();
+  useEffect(() => {
+    const key = params.get('report');
+    if (!key) return;
+    openReport(key);
+    const presetKey = params.get('preset');
+    if (params.get('from') || params.get('to')) {
+      setPreset('custom');
+      setFrom(params.get('from') || '');
+      setTo(params.get('to') || '');
+    } else if (presetKey && PRESETS.some((x) => x.key === presetKey)) {
+      applyPreset(presetKey);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params]);
 
   const deleteSaved = async (id, name) => {
     // eslint-disable-next-line no-alert

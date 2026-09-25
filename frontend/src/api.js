@@ -105,6 +105,7 @@ async function req(method, path, body) {
     // without needing hosting-dashboard access — discarding everything but
     // .error would throw that away.
     const err = new Error(data?.error || res.statusText);
+    err.status = res.status;
     err.requestId = data?.request_id;
     err.rawError = data?.raw_error;
     throw err;
@@ -149,7 +150,9 @@ export const api = {
 
   // dashboard
   dashboard: () => req('GET', '/dashboard'),
-  dashboardCrm: () => req('GET', '/dashboard/crm'),
+  dashboardCrm: (params) => req('GET', '/dashboard/crm' + qs(params)),
+  // The records behind one dashboard figure — same metric, same filters.
+  dashboardDrill: (params) => req('GET', '/dashboard/drill' + qs(params)),
 
   // reports
   //
@@ -390,6 +393,13 @@ export const api = {
 
   // Universal CRM — generic record CRUD (works for standard + custom modules)
   universalList: (module, params) => req('GET', recordsBase(module) + qs(params)),
+
+  // Subscriptions / AMC — schedule, renewal cycles and history
+  listSubscriptions: (params) => req('GET', '/subscriptions' + qs(params)),
+  subscriptionSchedule: (id) => req('GET', `/subscriptions/${id}/schedule`),
+  previewSubscription: (body) => req('POST', '/subscriptions/preview', body),
+  createSubscription: (body) => req('POST', '/subscriptions', body),
+  renewSubscription: (id, body) => req('POST', `/subscriptions/${id}/renew`, body),
   universalGet: (module, id) => req('GET', `${recordsBase(module)}/${id}`),
   universalCreate: (module, body) => req('POST', recordsBase(module), body),
   universalUpdate: (module, id, body) => req('PUT', `${recordsBase(module)}/${id}`, body),

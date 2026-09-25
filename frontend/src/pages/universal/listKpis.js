@@ -18,7 +18,9 @@ const inr = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { maximumFractio
 const count = (rows, fn) => rows.filter(fn).length;
 const sum = (rows, fn, get) => rows.filter(fn).reduce((s, r) => s + (Number(get(r)) || 0), 0);
 const isOpenStage = (r) => !r.is_won && !r.is_lost && !['Won', 'Lost', 'Closed'].includes(r.stage || r.status);
-const today = () => new Date().toISOString().slice(0, 10);
+// The viewer's own calendar date, not UTC's — at 00:30 IST the UTC date is
+// still yesterday, which would show today's tasks as not yet due.
+const today = () => new Date().toLocaleDateString('en-CA');
 
 export const LIST_KPIS = {
   // "Active" was near-duplicate of "Total accounts" in practice — almost
@@ -86,17 +88,25 @@ export const LIST_KPIS = {
     ];
   },
 
-  subscriptions: (rows) => [
-    { label: 'Subscriptions', icon: Repeat, value: rows.length, tone: 'info' },
-    { label: 'Active', icon: CheckCircle2, value: count(rows, (r) => r.status === 'Active'), tone: 'success' },
-    // Normalised to a monthly figure so cycles are comparable.
-    { label: 'MRR', icon: IndianRupee, value: inr(rows.filter((r) => r.status === 'Active').reduce((s, r) => {
-      const amt = Number(r.recurring_amount) || 0;
-      return s + (r.billing_cycle === 'Yearly' ? amt / 12 : r.billing_cycle === 'Quarterly' ? amt / 3 : amt);
-    }, 0)), tone: 'success' },
-    { label: 'Renewing ≤30d', icon: CalendarClock, value: count(rows, (r) => r.status === 'Active' && r.renewal_date
-      && (new Date(r.renewal_date) - Date.now()) / 86400000 <= 30), tone: 'warning' },
-  ],
+  subscriptions: (rows) => {
+    // Same definition as the dashboard's Renewals Due: an Active cycle that
+    // has not been renewed, renewing between today and 30 days from now.
+    const t = today();
+    const in30 = new Date(Date.parse(`${t}T00:00:00Z`) + 30 * 86400000).toISOString().slice(0, 10);
+    const renewalDue = (r) => r.status === 'Active' && !r.renewed_by_id && r.renewal_date
+      && String(r.renewal_date).slice(0, 10) >= t && String(r.renewal_date).slice(0, 10) <= in30;
+    const monthly = (r) => (Number(r.subscription_value) && Number(r.term_months)
+      ? Number(r.subscription_value) / Number(r.term_months)
+      : (Number(r.recurring_amount) || 0) / (r.billing_cycle === 'Yearly' ? 12 : r.billing_cycle === 'Quarterly' ? 3 : 1));
+    return [
+      { label: 'Subscriptions', icon: Repeat, value: rows.length, tone: 'info' },
+      { label: 'Active', icon: CheckCircle2, value: count(rows, (r) => r.status === 'Active'), tone: 'success',
+        filter: (r) => r.status === 'Active' },
+      // Normalised to a monthly figure so cycles are comparable.
+      { label: 'MRR', icon: IndianRupee, value: inr(rows.filter((r) => r.status === 'Active').reduce((s, r) => s + monthly(r), 0)), tone: 'success' },
+      { label: 'Renewal due ≤30d', icon: CalendarClock, value: count(rows, renewalDue), tone: 'warning', filter: renewalDue },
+    ];
+  },
   tickets: (rows) => [
     { label: 'Total tickets', icon: LifeBuoy, value: rows.length, tone: 'info' },
     { label: 'Open', icon: AlertTriangle, value: count(rows, (r) => !['Resolved', 'Closed'].includes(r.status)), tone: 'warning',

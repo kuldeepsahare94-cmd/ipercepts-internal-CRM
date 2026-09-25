@@ -270,6 +270,32 @@ body {
    7px bar with a shadow under it just looks blurred. */
 .dash-bar-fill { transition: width .8s cubic-bezier(.16,1,.3,1); }
 
+/* Drill-down targets. Everything on the dashboard that opens records is a
+   real link or button: pointer cursor, a subtle hover, and a visible focus
+   ring for keyboard users. `.dash-stretch` makes a card's main link cover
+   the whole card while secondary links inside it stay clickable on top. */
+.dash-link { cursor: pointer; border-radius: 10px; transition: background-color .15s ease, color .15s ease; }
+.dash-link:hover { color: var(--color-brand); }
+.dash-link:focus-visible,
+.dash-card:focus-visible,
+.dash-row:focus-visible,
+.dash-stretch:focus-visible::after,
+.dash-svg-link:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+.dash-stretch::after { content: ''; position: absolute; inset: 0; border-radius: inherit; z-index: 1; }
+.dash-above { position: relative; z-index: 2; }
+.dash-svg-link:hover text { fill: var(--color-brand); }
+.dash-svg-link:focus { outline: none; }
+.dash-svg-link:focus-visible circle:last-of-type { stroke-width: 3; }
+.dash-menu {
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(23, 35, 60, 0.14);
+}
+
 /* Slow ambient drift for the light blooms inside the bottom CTA — the
    one place on the page where motion runs continuously, slow enough
    (9–11s) to read as ambient rather than as something asking for
