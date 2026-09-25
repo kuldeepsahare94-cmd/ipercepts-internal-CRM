@@ -31,6 +31,7 @@ require('./db-phase39-documents');
 require('./db-phase40-template-library');
 require('./db-phase41-online-meetings');
 require('./db-phase42-security-access');
+require('./db-phase43-permission-completeness');
 
 const app = express();
 
