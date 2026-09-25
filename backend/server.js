@@ -33,6 +33,7 @@ require('./db-phase41-online-meetings');
 require('./db-phase42-security-access');
 require('./db-phase43-permission-completeness');
 require('./db-phase44-subscriptions-amc');
+require('./db-phase45-list-tools');
 
 const app = express();
 
@@ -165,6 +166,7 @@ app.use('/api/inbox', requireAuth, require('./routes/inbox'));
 app.use('/api/track', require('./routes/tracking'));
 app.use('/api/email-campaigns', requireAuth, require('./routes/emailCampaigns'));
 app.use('/api/ai-actions', requireAuth, require('./routes/aiActions'));
+app.use('/api/saved-filters', requireAuth, require('./routes/savedFilters'));
 
 // ---------------------------------------------------------------------------
 // Per-customer extensions — features built for ONE customer.

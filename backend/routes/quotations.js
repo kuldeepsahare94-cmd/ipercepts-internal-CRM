@@ -155,7 +155,7 @@ router.put('/:id', requirePermission('quotations', 'edit'), (req, res) => {
     db.prepare(`
       UPDATE quotations SET quote_date=?, valid_until=?, account_id=?, contact_id=?, opportunity_id=?, billing_address=?,
         shipping_address=?, currency=?, payment_terms=?, notes=?, terms=?, status=?,
-        overall_discount_type=?, overall_discount_value=?,
+        overall_discount_type=?, overall_discount_value=?, salesperson_id=?,
         sent_at=CASE WHEN ?='Sent' AND status!='Sent' THEN datetime('now') ELSE sent_at END,
         accepted_at=CASE WHEN ?='Accepted' AND status!='Accepted' THEN datetime('now') ELSE accepted_at END,
         rejected_at=CASE WHEN ?='Rejected' AND status!='Rejected' THEN datetime('now') ELSE rejected_at END,
@@ -163,7 +163,7 @@ router.put('/:id', requirePermission('quotations', 'edit'), (req, res) => {
       WHERE id=?
     `).run(m.quote_date, m.valid_until, m.account_id, m.contact_id, m.opportunity_id, m.billing_address,
       m.shipping_address, m.currency, m.payment_terms, m.notes, m.terms, m.status,
-      m.overall_discount_type || 'percent', Number(m.overall_discount_value) || 0,
+      m.overall_discount_type || 'percent', Number(m.overall_discount_value) || 0, m.salesperson_id ?? null,
       m.status, m.status, m.status, req.params.id);
 
     if (Array.isArray(b.items)) {

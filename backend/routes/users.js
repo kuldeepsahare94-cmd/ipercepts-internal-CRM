@@ -4,6 +4,17 @@ const bcrypt = require('bcryptjs');
 const db = require('../db');
 const { requirePermission } = require('../middleware/auth');
 
+// Directory for pickers: who a record can be assigned to. Any signed-in user
+// may read it (a sales rep reassigning a lead has no users:view), so it
+// returns names only — no roles, usernames or permissions.
+router.get('/directory', (req, res) => {
+  const users = db.prepare(`SELECT id, COALESCE(NULLIF(full_name,''), username) AS name, username, active
+    FROM users ORDER BY active DESC, name`).all();
+  let teams = [];
+  try { teams = db.prepare("SELECT id, name FROM teams WHERE COALESCE(active,1)=1 ORDER BY name").all(); } catch { teams = []; }
+  res.json({ users, teams });
+});
+
 router.get('/', requirePermission('users', 'view'), (req, res) => {
   const rows = db.prepare(`
     SELECT u.id, u.username, u.full_name, u.active, u.role_id, r.name AS role_name, u.created_at
