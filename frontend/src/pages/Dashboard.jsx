@@ -64,15 +64,21 @@ function relativeTime(value) {
 }
 const hhmm = (s) => (s ? String(s).slice(11, 16) : '');
 
+// Each accent carries a two-stop gradient (g) for icon tiles and card
+// accent bars, a soft tint for rows and pills, and its RGB for glows.
 const COLORS = {
-  purple:  { c: '#6C4FF7', soft: '#F0EDFF', rgb: '108, 79, 247' },
-  blue:    { c: '#3B82F6', soft: '#EFF6FF', rgb: '59, 130, 246' },
-  teal:    { c: '#14B8A6', soft: '#ECFDF9', rgb: '20, 184, 166' },
-  emerald: { c: '#10B981', soft: '#ECFDF5', rgb: '16, 185, 129' },
-  amber:   { c: '#F59E0B', soft: '#FFFBEB', rgb: '245, 158, 11' },
-  orange:  { c: '#F97316', soft: '#FFF7ED', rgb: '249, 115, 22' },
-  rose:    { c: '#F43F5E', soft: '#FFF1F2', rgb: '244, 63, 94' },
+  purple:  { c: '#6C4FF7', soft: '#F0EDFF', rgb: '108, 79, 247', g: ['#A78BFA', '#6C4FF7'] },
+  blue:    { c: '#3B82F6', soft: '#EFF6FF', rgb: '59, 130, 246', g: ['#60A5FA', '#2563EB'] },
+  teal:    { c: '#14B8A6', soft: '#ECFDF9', rgb: '20, 184, 166', g: ['#2DD4BF', '#0D9488'] },
+  emerald: { c: '#10B981', soft: '#ECFDF5', rgb: '16, 185, 129', g: ['#34D399', '#059669'] },
+  amber:   { c: '#F59E0B', soft: '#FFFBEB', rgb: '245, 158, 11', g: ['#FCD34D', '#F59E0B'] },
+  orange:  { c: '#F97316', soft: '#FFF7ED', rgb: '249, 115, 22', g: ['#FDBA74', '#EA580C'] },
+  rose:    { c: '#F43F5E', soft: '#FFF1F2', rgb: '244, 63, 94', g: ['#FB7185', '#E11D48'] },
 };
+const grad = (t, deg = 135) => `linear-gradient(${deg}deg, ${t.g[0]}, ${t.g[1]})`;
+// Solid gradient icon tile with a soft coloured shadow — the main source of
+// colour on the page, so the white cards read as rich rather than plain.
+const tile = (t) => ({ background: grad(t), color: '#FFFFFF', boxShadow: `0 8px 16px -8px rgba(${t.rgb}, 0.75)` });
 const PRIORITY_TONE = { Urgent: '#F43F5E', High: '#F97316', Medium: '#F59E0B', Low: '#3B82F6', Unset: '#94A3B8' };
 
 // ---------------------------------------------------------------------------
@@ -164,9 +170,9 @@ function ViewLink({ to, children = 'View all' }) {
 
 function SectionLabel({ children, action }) {
   return (
-    <div className="flex items-center justify-between gap-3 mt-6 mb-2.5 flex-wrap">
-      <h2 className="text-[15px] font-bold flex items-center gap-2" style={{ color: 'var(--color-ink)' }}>
-        <span className="w-[3px] h-4 rounded-[3px] shrink-0" style={{ background: 'var(--color-brand)' }} />
+    <div className="flex items-center justify-between gap-3 mt-7 mb-3 flex-wrap">
+      <h2 className="text-[16px] font-bold flex items-center gap-2.5 tracking-[-0.01em]" style={{ color: 'var(--color-ink)' }}>
+        <span className="w-1 h-5 rounded-full shrink-0" style={{ background: 'linear-gradient(180deg, #A78BFA, #6C4FF7 60%, #3B82F6)' }} />
         {children}
       </h2>
       {action && <div className="flex items-center gap-2">{action}</div>}
@@ -176,11 +182,12 @@ function SectionLabel({ children, action }) {
 
 function Panel({ title, subtitle, icon: Icon, accent = COLORS.purple, action, children, className = '', badge }) {
   return (
-    <section className={`dash-card p-4 flex flex-col min-w-0 ${className}`} aria-label={title}>
+    <section className={`dash-card dash-accented p-4 flex flex-col min-w-0 ${className}`} aria-label={title}
+      style={{ '--accent-rgb': accent.rgb, '--accent-grad': grad(accent, 90) }}>
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-start gap-2.5 min-w-0">
           {Icon && (
-            <span className="w-9 h-9 rounded-[10px] flex items-center justify-center shrink-0" style={{ background: accent.soft, color: accent.c }}>
+            <span className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={tile(accent)}>
               <Icon className="w-[18px] h-[18px]" strokeWidth={2} />
             </span>
           )}
@@ -240,11 +247,13 @@ function Brief({ brief, ctx, onReview }) {
   const top = live.slice(0, 3);
   return (
     <div className="grid lg:grid-cols-[1fr_300px] gap-3.5">
-      <section className="dash-card p-4 relative overflow-hidden" aria-label="Today's CRM brief"
-        style={{ background: 'linear-gradient(110deg, #F4F1FF 0%, #FFFFFF 70%)' }}>
+      <section className="dash-card p-5 relative overflow-hidden" aria-label="Today's CRM brief"
+        style={{ background: 'linear-gradient(120deg, #EFEAFF 0%, #F7F4FF 40%, #FFFFFF 75%)', borderColor: 'rgba(108,79,247,0.18)' }}>
+        <div aria-hidden="true" className="absolute -top-16 -right-10 w-64 h-64 rounded-full pointer-events-none"
+          style={{ background: 'radial-gradient(circle, rgba(139,92,246,0.16), transparent 65%)' }} />
         <div className="flex items-center gap-3">
-          <span className="w-11 h-11 rounded-2xl flex items-center justify-center text-white shrink-0"
-            style={{ background: 'linear-gradient(135deg, #8B5CF6, #6C4FF7)' }}>
+          <span className="relative w-12 h-12 rounded-2xl flex items-center justify-center text-white shrink-0"
+            style={{ background: 'linear-gradient(135deg, #A78BFA, #6C4FF7 55%, #4F46E5)', boxShadow: '0 10px 22px -10px rgba(108,79,247,0.8)' }}>
             <Bot className="w-6 h-6" />
           </span>
           <div>
@@ -260,9 +269,9 @@ function Brief({ brief, ctx, onReview }) {
               const Icon = BRIEF_ICON[b.key] || Sparkles;
               const tone = TONES[b.tone] || COLORS.purple;
               return (
-                <DLink key={b.key} to={drillHref(b, ctx)} className="dash-card flex items-center gap-3 px-3 py-3 group"
+                <DLink key={b.key} to={drillHref(b, ctx)} className="dash-card relative flex items-center gap-3 px-3.5 py-3.5 group"
                   label={`${b.count} ${b.label}: ${b.detail}`}>
-                  <span className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: tone.soft, color: tone.c }}>
+                  <span className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0" style={tile(tone)}>
                     <Icon className="w-5 h-5" />
                   </span>
                   <span className="min-w-0 flex-1">
@@ -278,7 +287,10 @@ function Brief({ brief, ctx, onReview }) {
         )}
       </section>
 
-      <section className="dash-card p-4 flex flex-col" aria-label="Ask AI">
+      <section className="dash-card p-5 flex flex-col relative overflow-hidden" aria-label="Ask AI"
+        style={{ background: 'linear-gradient(160deg, #FFFFFF 0%, #F5F3FF 100%)', borderColor: 'rgba(108,79,247,0.18)' }}>
+        <div aria-hidden="true" className="absolute -bottom-20 -right-16 w-56 h-56 rounded-full pointer-events-none"
+          style={{ background: 'radial-gradient(circle, rgba(59,130,246,0.14), transparent 65%)' }} />
         <h2 className="text-[15px] font-bold flex items-center gap-2" style={{ color: 'var(--color-ink)' }}>
           <Sparkles className="w-5 h-5" style={{ color: 'var(--color-brand)' }} /> Ask AI
         </h2>
@@ -286,7 +298,7 @@ function Brief({ brief, ctx, onReview }) {
         <div className="mt-auto pt-3 flex flex-col gap-2">
           <button type="button" onClick={() => openAssistant('What should I focus on today?')}
             className="w-full text-[13px] font-semibold text-white py-2 rounded-lg transition-opacity hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
-            style={{ background: 'linear-gradient(90deg, #6C4FF7, #7C3AED)' }}>
+            style={{ background: 'linear-gradient(90deg, #6C4FF7, #7C3AED 55%, #9333EA)', boxShadow: '0 10px 20px -10px rgba(108,79,247,0.9)' }}>
             Ask AI
           </button>
           <button type="button" onClick={onReview}
@@ -324,7 +336,7 @@ function InsightsDrawer({ brief, ctx, onClose }) {
             return (
               <div key={b.key} className="rounded-xl border p-3" style={{ borderColor: 'var(--color-line)' }}>
                 <div className="flex items-center gap-3">
-                  <span className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ background: tone.soft, color: tone.c }}><Icon className="w-[18px] h-[18px]" /></span>
+                  <span className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={tile(tone)}><Icon className="w-[18px] h-[18px]" /></span>
                   <div className="flex-1 min-w-0">
                     <div className="text-[14px] font-semibold" style={{ color: 'var(--color-ink)' }}>
                       {b.locked ? <Locked /> : <>{b.count} {b.label}</>}
@@ -364,8 +376,9 @@ function InsightsDrawer({ brief, ctx, onClose }) {
 function AttentionCard({ m, icon: Icon, tone, label, sub, action, ctx, extra }) {
   const to = drillHref(m, ctx);
   return (
-    <div className="dash-card relative flex items-center gap-3 px-3.5 py-3 group" style={{ background: '#FFFFFF' }}>
-      <span className="w-10 h-10 rounded-full flex items-center justify-center shrink-0" style={{ background: tone.soft, color: tone.c }}>
+    <div className="dash-card dash-leftbar relative flex items-center gap-3 pl-4 pr-3.5 py-3.5 group"
+      style={{ '--accent-rgb': tone.rgb, '--accent-grad': grad(tone, 180) }}>
+      <span className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0" style={tile(tone)}>
         <Icon className="w-5 h-5" />
       </span>
       <div className="min-w-0 flex-1">
@@ -392,10 +405,10 @@ function NeedsAttention({ attention, ctx, windows }) {
   const renewalOverdue = a.renewals_overdue;
   return (
     <section className="rounded-2xl p-4 mt-4" aria-label="Needs attention"
-      style={{ background: 'linear-gradient(100deg, #FFF1F2 0%, #FFF7F7 55%, #FFFBF5 100%)', border: '1px solid #FBD5DA' }}>
+      style={{ background: 'linear-gradient(115deg, rgba(255,228,233,0.9) 0%, rgba(255,241,242,0.85) 45%, rgba(255,247,237,0.85) 100%)', border: '1px solid rgba(251,113,133,0.28)', boxShadow: '0 10px 30px -18px rgba(225,29,72,0.45)' }}>
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-3">
-          <span className="w-10 h-10 rounded-full flex items-center justify-center text-white shrink-0" style={{ background: '#F43F5E' }}>
+          <span className="w-11 h-11 rounded-xl flex items-center justify-center text-white shrink-0" style={tile(COLORS.rose)}>
             <AlertTriangle className="w-5 h-5" />
           </span>
           <div>
@@ -433,20 +446,20 @@ function Kpi({ label, value, icon: Icon, tone, to, sub, locked, children }) {
   const body = (
     <>
       <div className="flex items-start justify-between">
-        <span className="w-9 h-9 rounded-[10px] flex items-center justify-center" style={{ background: tone.soft, color: tone.c }}>
+        <span className="w-10 h-10 rounded-xl flex items-center justify-center" style={tile(tone)}>
           <Icon className="w-[18px] h-[18px]" />
         </span>
         {to && <ChevronRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5" style={{ color: 'var(--color-disabled)' }} />}
       </div>
       <div className="text-[12.5px] mt-2.5" style={{ color: 'var(--color-muted)' }}>{label}</div>
-      <div className="dash-figure text-[24px] font-bold leading-tight tabular-nums" style={{ fontFamily: 'var(--font-display)' }}>
+      <div className="dash-figure text-[26px] font-extrabold leading-tight tabular-nums" style={{ fontFamily: 'var(--font-display)' }}>
         {locked ? <Locked /> : value}
       </div>
       {sub && <div className="text-[11.5px] mt-1" style={{ color: 'var(--color-muted)' }}>{sub}</div>}
     </>
   );
   return (
-    <div className="dash-card dash-glow relative p-3.5 group h-full" style={{ '--accent-rgb': tone.rgb }}>
+    <div className="dash-card dash-glow dash-accented dash-kpi relative p-4 group h-full" style={{ '--accent-rgb': tone.rgb, '--accent-grad': grad(tone, 90) }}>
       {to && !locked
         ? <Link to={to} onClick={rememberScroll} className="dash-stretch block" aria-label={`${label}: ${value}`}>{body}</Link>
         : body}
@@ -482,17 +495,17 @@ function OverdueActionsCard({ oa, ctx }) {
   }, [open]);
   const tone = COLORS.rose;
   return (
-    <div ref={ref} className="dash-card dash-glow relative p-3.5 group h-full" style={{ '--accent-rgb': tone.rgb }}>
+    <div ref={ref} className="dash-card dash-glow dash-accented dash-kpi relative p-4 group h-full" style={{ '--accent-rgb': tone.rgb, '--accent-grad': grad(tone, 90) }}>
       <button type="button" className="dash-stretch block w-full text-left" onClick={() => setOpen((o) => !o)}
         aria-haspopup="menu" aria-expanded={open} aria-label={`Overdue actions: ${oa.count}. Choose tasks or follow-ups`} disabled={oa.locked}>
         <div className="flex items-start justify-between">
-          <span className="w-9 h-9 rounded-[10px] flex items-center justify-center" style={{ background: tone.soft, color: tone.c }}>
+          <span className="w-10 h-10 rounded-xl flex items-center justify-center" style={tile(tone)}>
             <ClipboardCheck className="w-[18px] h-[18px]" />
           </span>
           <ChevronDown className="w-4 h-4" style={{ color: 'var(--color-disabled)' }} />
         </div>
         <div className="text-[12.5px] mt-2.5" style={{ color: 'var(--color-muted)' }}>Overdue Actions</div>
-        <div className="dash-figure text-[24px] font-bold leading-tight tabular-nums">{oa.locked ? <Locked /> : oa.count}</div>
+        <div className="dash-figure text-[26px] font-extrabold leading-tight tabular-nums">{oa.locked ? <Locked /> : oa.count}</div>
       </button>
       <div className="relative dash-above mt-1 flex items-center gap-1.5 flex-wrap text-[11px]" style={{ color: 'var(--color-muted)' }}>
         {oa.parts.map((p, i) => (
@@ -693,9 +706,9 @@ function Hint({ text }) {
 
 function Performance({ p, ctx }) {
   if (p.locked) return <div className="dash-card p-4"><Locked /></div>;
-  const tile = (label, icon, tone, value, m, extra, hint) => (
-    <div className="dash-card dash-glow relative p-3.5 flex items-center gap-3 group" style={{ '--accent-rgb': tone.rgb }}>
-      <span className="w-11 h-11 rounded-full flex items-center justify-center shrink-0" style={{ background: tone.soft, color: tone.c }}>
+  const perfTile = (label, icon, tone, value, m, extra, hint) => (
+    <div className="dash-card dash-glow dash-accented relative p-4 flex items-center gap-3.5 group" style={{ '--accent-rgb': tone.rgb, '--accent-grad': grad(tone, 90) }}>
+      <span className="w-12 h-12 rounded-2xl flex items-center justify-center shrink-0" style={tile(tone)}>
         {icon}
       </span>
       <div className="min-w-0 flex-1">
@@ -710,12 +723,12 @@ function Performance({ p, ctx }) {
   );
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
-      {tile('Deals Won', <Trophy className="w-5 h-5" />, COLORS.purple, p.won.count, p.won, inr(p.won.sum))}
-      {tile('Deals Lost', <AlertTriangle className="w-5 h-5" />, COLORS.rose, p.lost.count, p.lost, inr(p.lost.sum))}
-      {tile('Win Rate', <Target className="w-5 h-5" />, COLORS.purple, p.win_rate === null ? '—' : `${p.win_rate}%`, p.closed,
+      {perfTile('Deals Won', <Trophy className="w-5 h-5" />, COLORS.purple, p.won.count, p.won, inr(p.won.sum))}
+      {perfTile('Deals Lost', <AlertTriangle className="w-5 h-5" />, COLORS.rose, p.lost.count, p.lost, inr(p.lost.sum))}
+      {perfTile('Win Rate', <Target className="w-5 h-5" />, COLORS.purple, p.win_rate === null ? '—' : `${p.win_rate}%`, p.closed,
         p.win_rate === null ? 'No deals closed in this period' : `${p.won.count} won of ${p.closed.count} closed`,
         'Win rate = deals won ÷ (deals won + deals lost), closed in the selected period.')}
-      {tile('Average Deal Size', <IndianRupee className="w-5 h-5" />, COLORS.blue, p.avg_deal_size === null ? '—' : inr(p.avg_deal_size), p.won,
+      {perfTile('Average Deal Size', <IndianRupee className="w-5 h-5" />, COLORS.blue, p.avg_deal_size === null ? '—' : inr(p.avg_deal_size), p.won,
         p.avg_deal_size === null ? 'No deals won in this period' : `${inr(p.won.sum)} ÷ ${p.won.count} won`,
         'Average deal size = total value of deals won ÷ number of deals won, in the selected period.')}
     </div>
@@ -1088,24 +1101,58 @@ export default function Dashboard() {
   );
 
   return (
+    <div className="dash-canvas relative -m-4 sm:-m-6 p-4 sm:p-6">
     <div className="relative max-w-[1600px] mx-auto">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex items-center gap-3">
-          <Sun className="w-9 h-9 shrink-0" style={{ color: '#F59E0B' }} aria-hidden="true" />
-          <div>
-            <h1 className="text-[20px] font-bold leading-tight" style={{ color: 'var(--color-ink)', fontFamily: 'var(--font-display)' }}>
-              {greeting}, {user?.full_name?.split(' ')[0] || user?.username || 'there'}
-            </h1>
-            <p className="text-[12.5px]" style={{ color: 'var(--color-muted)' }}>Here is what needs your attention today.</p>
+      {/* Header: a light, faded white-to-blue banner with the mountain
+          illustration — calm enough that the figures below stay the focus. */}
+      <header className="dash-hero relative overflow-hidden rounded-[20px] px-5 sm:px-6 py-5">
+        <div aria-hidden="true" className="absolute inset-0 pointer-events-none">
+          <div className="absolute -top-24 right-[18%] w-96 h-72 rounded-full" style={{ background: 'radial-gradient(circle, rgba(96,165,250,0.45), transparent 65%)' }} />
+          <div className="absolute -bottom-24 -left-10 w-80 h-64 rounded-full" style={{ background: 'radial-gradient(circle, rgba(167,139,250,0.45), transparent 65%)' }} />
+          <div className="absolute inset-0 opacity-60" style={{ backgroundImage: 'radial-gradient(circle at 1px 1px, rgba(79,70,229,0.12) 1px, transparent 0)', backgroundSize: '22px 22px' }} />
+        </div>
+        <div className="relative flex items-center justify-between gap-4 flex-wrap">
+          <div className="flex items-center gap-3.5 min-w-0">
+            <span className="w-12 h-12 rounded-2xl flex items-center justify-center shrink-0"
+              style={{ background: '#FFFFFF', boxShadow: '0 8px 18px -8px rgba(99,102,241,0.6), inset 0 0 0 1px rgba(196,181,253,0.9)' }}>
+              <Sun className="w-7 h-7" style={{ color: '#F59E0B' }} aria-hidden="true" />
+            </span>
+            <div className="min-w-0">
+              <h1 className="text-[22px] sm:text-[24px] font-extrabold leading-tight tracking-[-0.02em]" style={{ color: 'var(--color-ink)', fontFamily: 'var(--font-display)' }}>
+                {greeting}, {user?.full_name?.split(' ')[0] || user?.username || 'there'}
+              </h1>
+              <p className="text-[13px] mt-0.5" style={{ color: '#4C4F7A' }}>Here is what needs your attention today.</p>
+            </div>
+          </div>
+
+          {/* Mountain and flag, with the quote beside it. Decorative. */}
+          <div className="hidden lg:flex items-center gap-3 shrink-0 ml-auto" aria-hidden="true">
+            <svg viewBox="0 0 170 96" className="w-[132px] h-[75px] shrink-0">
+              <ellipse cx="85" cy="88" rx="72" ry="7" fill="#A5B4FC" opacity="0.45" />
+              <path d="M0 88 L42 34 L64 58 L96 16 L170 88 Z" fill="#C7D2FE" />
+              <path d="M52 88 L96 16 L140 88 Z" fill="#A5B4FC" />
+              <path d="M83 31 L96 16 L109 31 L101 27 L96 32 L91 27 Z" fill="#FFFFFF" />
+              <rect x="95" y="6" width="1.8" height="22" rx="0.9" fill="#4338CA" />
+              <path d="M96.8 6 L114 11.5 L96.8 17 Z" fill="#6C4FF7" />
+              <circle cx="34" cy="26" r="3" fill="#93C5FD" opacity="0.8" />
+              <circle cx="146" cy="34" r="2.2" fill="#A5B4FC" opacity="0.7" />
+              <circle cx="128" cy="14" r="1.6" fill="#93C5FD" opacity="0.7" />
+            </svg>
+            <p className="text-[11.5px] italic leading-snug max-w-[150px]" style={{ color: '#4C4F7A' }}>
+              &ldquo;Small steps today, big results tomorrow.&rdquo;
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2.5 flex-wrap">
+            {refreshing && <RefreshCw className="w-4 h-4 animate-spin" style={{ color: 'var(--color-faint)' }} aria-label="Refreshing" />}
+            <span className="inline-flex items-center gap-2 text-[13px] font-semibold px-3 py-1.5 rounded-xl"
+              style={{ background: '#FFFFFF', color: 'var(--color-ink)', boxShadow: '0 6px 14px -8px rgba(99,102,241,0.55), inset 0 0 0 1px rgba(196,181,253,0.9)' }}>
+              <CalendarDays className="w-4 h-4" style={{ color: '#6C4FF7' }} /> {todayLabel}
+            </span>
+            <ScopeSelect data={data} ctx={ctx} onChange={setScope} />
           </div>
         </div>
-        <div className="flex items-center gap-2.5 flex-wrap">
-          {refreshing && <RefreshCw className="w-4 h-4 animate-spin" style={{ color: 'var(--color-faint)' }} aria-label="Refreshing" />}
-          <span className="text-[13px] font-medium" style={{ color: 'var(--color-ink)' }}>{todayLabel}</span>
-          <ScopeSelect data={data} ctx={ctx} onChange={setScope} />
-        </div>
-      </div>
+      </header>
       {data.scope && (
         <p className="text-[12px] mt-2" style={{ color: 'var(--color-muted)' }}>
           Showing figures for {data.scope.label[0].toLowerCase()} <b style={{ color: 'var(--color-ink)' }}>{data.scope.label[1]}</b>.{' '}
@@ -1200,6 +1247,7 @@ export default function Dashboard() {
       </div>
 
       {reviewing && <InsightsDrawer brief={data.brief} ctx={ctx} onClose={() => setReviewing(false)} />}
+    </div>
     </div>
   );
 }

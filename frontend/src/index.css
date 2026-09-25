@@ -182,14 +182,14 @@ body {
 .dash-card {
   position: relative;
   background: var(--color-surface);
-  border: 1px solid var(--color-line);
-  border-radius: 14px;
-  box-shadow: 0 2px 10px rgba(23, 35, 60, 0.05);
+  border: 1px solid rgba(226, 231, 243, 0.9);
+  border-radius: 16px;
+  box-shadow: 0 1px 2px rgba(23, 35, 60, 0.04), 0 8px 24px -12px rgba(49, 46, 129, 0.14);
   transition: box-shadow .2s ease, border-color .2s ease, transform .2s ease;
 }
 .dash-card:hover {
-  box-shadow: 0 6px 18px rgba(23, 35, 60, 0.08);
-  border-color: var(--color-line-strong);
+  box-shadow: 0 1px 2px rgba(23, 35, 60, 0.05), 0 16px 32px -14px rgba(var(--accent-rgb, 108, 79, 247), 0.35);
+  border-color: rgba(var(--accent-rgb, 108, 79, 247), 0.28);
   /* 1px, not a lift. A card that jumps under the cursor is movement the
      reader has to absorb before they can read the number on it. */
   transform: translateY(-1px);
@@ -270,6 +270,47 @@ body {
    7px bar with a shadow under it just looks blurred. */
 .dash-bar-fill { transition: width .8s cubic-bezier(.16,1,.3,1); }
 
+/* ===== Dashboard canvas & accents =====
+   The page sits on a soft colour field (lavender, sky and mint blooms over
+   a faint dot grid) instead of flat grey, so white cards read as floating
+   surfaces. Everything is decorative and behind content. */
+.dash-canvas {
+  min-height: 100%;
+  background:
+    radial-gradient(900px 480px at 8% -6%, rgba(167, 139, 250, 0.22), transparent 60%),
+    radial-gradient(760px 420px at 100% 4%, rgba(56, 189, 248, 0.16), transparent 60%),
+    radial-gradient(820px 520px at 50% 58%, rgba(52, 211, 153, 0.08), transparent 62%),
+    radial-gradient(700px 520px at 0% 100%, rgba(244, 114, 182, 0.10), transparent 60%),
+    radial-gradient(circle at 1px 1px, rgba(99, 102, 241, 0.07) 1px, transparent 0) 0 0 / 24px 24px,
+    linear-gradient(180deg, #F6F4FF 0%, #F5F8FF 45%, #F7F9FC 100%);
+}
+.dash-hero {
+  background: linear-gradient(110deg, #F1EBFF 0%, #E4DBFF 30%, #D6DEFF 62%, #C7DAFF 100%);
+  border: 1px solid rgba(139, 124, 246, 0.35);
+  box-shadow: 0 1px 2px rgba(23, 35, 60, 0.05), 0 18px 40px -20px rgba(99, 102, 241, 0.55);
+}
+.dark-mode .dash-hero { background: linear-gradient(110deg, var(--color-surface), #1B2440); border-color: var(--color-line); }
+/* A thin gradient bar across the top of a card, in its own accent. */
+.dash-accented { overflow: hidden; }
+.dash-accented::before {
+  content: ''; position: absolute; left: 0; right: 0; top: 0; height: 3px;
+  background: var(--accent-grad, linear-gradient(90deg, #A78BFA, #6C4FF7));
+  pointer-events: none;
+}
+/* KPI cards: a faint wash of the accent in the top-right corner. */
+.dash-kpi {
+  background:
+    radial-gradient(220px 140px at 100% 0%, rgba(var(--accent-rgb, 108, 79, 247), 0.10), transparent 70%),
+    var(--color-surface);
+}
+/* Needs Attention cards: a gradient bar down the left edge. */
+.dash-leftbar { overflow: hidden; }
+.dash-leftbar::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
+  background: var(--accent-grad, linear-gradient(180deg, #FB7185, #E11D48));
+  pointer-events: none;
+}
+
 /* Drill-down targets. Everything on the dashboard that opens records is a
    real link or button: pointer cursor, a subtle hover, and a visible focus
    ring for keyboard users. `.dash-stretch` makes a card's main link cover
@@ -313,6 +354,15 @@ body {
 }
 
 /* ===== Dark mode =====
+   (Dashboard canvas gets a deep version of the same colour field.) */
+.dark-mode .dash-canvas {
+  background:
+    radial-gradient(900px 480px at 8% -6%, rgba(139, 92, 246, 0.18), transparent 60%),
+    radial-gradient(760px 420px at 100% 4%, rgba(56, 189, 248, 0.10), transparent 60%),
+    var(--color-canvas);
+}
+.dark-mode .dash-kpi { background: var(--color-surface); }
+/* ===== Dark mode (base) =====
    Applied via .dark-mode on <html>, toggled from Appearance settings. */
 html.dark-mode {
   --color-canvas: #0F1117;
