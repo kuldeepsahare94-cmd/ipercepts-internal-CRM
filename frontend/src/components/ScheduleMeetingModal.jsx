@@ -79,6 +79,12 @@ export default function ScheduleMeetingModal({ initial, relatedTo, onClose, onSa
       meeting_type: initial?.meeting_type || 'Online',
       reminder_minutes: initial?.reminder_minutes ?? 15,
       online_platform: initial?.online_platform || '',
+      // Edit only — how it went. Sent only when editing, so booking a new
+      // meeting can never overwrite these.
+      status: initial?.status || 'Scheduled',
+      outcome: initial?.outcome || '',
+      next_action: initial?.next_action || '',
+      meeting_notes: initial?.meeting_notes || '',
     };
   });
 
@@ -117,6 +123,74 @@ export default function ScheduleMeetingModal({ initial, relatedTo, onClose, onSa
   const [conflicts, setConflicts] = useState([]);
   const meetingId = initial?.meeting_id;
 
+  // EDITING LOADS THE MEETING ITSELF.
+  // Callers used to hand this form whatever they had to hand — the Calendar
+  // passed title, times, location and agenda, but not the linked record, the
+  // attendees, the platform or the reminder. The form then filled those with
+  // its "new meeting" defaults, and because a save sends the whole form, just
+  // opening Edit and pressing Save unlinked the meeting from its lead, deleted
+  // every attendee and dropped the Google Meet. So when there is a meeting id,
+  // the stored meeting is fetched and fills anything the caller didn't give.
+  // Times the caller DID give are kept: the Calendar converts them from UTC
+  // for the viewer's zone, which the stored wall-clock time can't do.
+  const [hydrating, setHydrating] = useState(Boolean(meetingId));
+  useEffect(() => {
+    if (!meetingId) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const m = await api.universalGet({ api_name: 'meetings', table_name: 'meetings' }, meetingId);
+        if (cancelled || !m) return;
+        const given = (k) => initial && initial[k] !== undefined && initial[k] !== '';
+        const pick = (k, stored) => (given(k) ? initial[k] : stored);
+        const stamp = (v) => (v ? toLocalValue(fromLocalValue(String(v).replace(' ', 'T'))) : '');
+        setForm((f) => ({
+          ...f,
+          meeting_title: pick('meeting_title', m.meeting_title || ''),
+          start: pick('start', stamp(m.start_datetime) || f.start),
+          end: pick('end', stamp(m.end_datetime) || f.end),
+          all_day: given('all_day') ? initial.all_day : Boolean(m.all_day),
+          location: pick('location', m.location || ''),
+          video_link: pick('video_link', m.video_link || ''),
+          agenda: pick('agenda', m.agenda || ''),
+          meeting_type: pick('meeting_type', m.meeting_type || f.meeting_type),
+          reminder_minutes: given('reminder_minutes') ? initial.reminder_minutes : (m.reminder_minutes ?? ''),
+          online_platform: pick('online_platform', m.online_platform || ''),
+          status: pick('status', m.status || 'Scheduled'),
+          outcome: pick('outcome', m.outcome || ''),
+          next_action: pick('next_action', m.next_action || ''),
+          meeting_notes: pick('meeting_notes', m.meeting_notes || ''),
+        }));
+        if (!initial?.attendees) {
+          let list = [];
+          try { list = JSON.parse(m.attendees_json || '[]'); } catch { list = []; }
+          setAttendees((Array.isArray(list) ? list : []).map((a) => ({
+            ...a, type_label: a.type_label || (a.kind === 'external' ? 'External' : MODULE_LABEL[a.module] || 'Contact'),
+          })));
+        }
+        if (!initial?.related_record && m.related_module && m.related_record_id) {
+          const r = await api.lookupResolve(m.related_module, [m.related_record_id]).catch(() => null);
+          const hit = r?.results?.[0];
+          if (!cancelled) {
+            setRecord({
+              module: m.related_module,
+              id: m.related_record_id,
+              name: hit?.label || `${MODULE_LABEL[m.related_module] || m.related_module} #${m.related_record_id}`,
+              type_label: MODULE_LABEL[m.related_module] || 'Record',
+              secondary: hit?.sub || '',
+            });
+          }
+        }
+      } catch {
+        // Can't read the stored meeting (no view permission on Meetings).
+        // Fall through with what the caller gave — but see `partial` below.
+      } finally {
+        if (!cancelled) setHydrating(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [meetingId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Warn about a clash while the form is open, not after saving. Checking as
   // the times change is the only version of this that actually prevents the
   // double-booking rather than reporting it.
@@ -154,6 +228,7 @@ export default function ScheduleMeetingModal({ initial, relatedTo, onClose, onSa
 
   const submit = async (e) => {
     e.preventDefault();
+    if (hydrating) return;
     if (!form.meeting_title.trim()) { setError('Give the meeting a title.'); return; }
     if (!form.start) { setError('Pick a start time.'); return; }
     // Validated here rather than left to the server, because an end before a
@@ -187,6 +262,12 @@ export default function ScheduleMeetingModal({ initial, relatedTo, onClose, onSa
           kind: a.kind, module: a.module, record_id: a.record_id, name: a.name, email: a.email,
         })),
         online_platform: form.online_platform || null,
+        ...(meetingId ? {
+          status: form.status || 'Scheduled',
+          outcome: form.outcome || null,
+          next_action: form.next_action || null,
+          meeting_notes: form.meeting_notes || null,
+        } : {}),
       };
       // One endpoint, from every entry point. This is the line that makes the
       // slot actually block.
@@ -216,6 +297,9 @@ export default function ScheduleMeetingModal({ initial, relatedTo, onClose, onSa
           </button>
         </div>
 
+        {hydrating ? (
+          <div className="py-16 text-center text-[13px]" style={{ color: 'var(--color-muted)' }}>Loading meeting…</div>
+        ) : (
         <div className="space-y-3 mt-4">
           <label className="block">
             <span className="block text-xs font-medium text-ink mb-1">Title *</span>
@@ -261,7 +345,11 @@ export default function ScheduleMeetingModal({ initial, relatedTo, onClose, onSa
             <label className="block min-w-0">
               <span className="block text-xs font-medium text-ink mb-1">Type</span>
               <select value={form.meeting_type} onChange={(e) => set('meeting_type', e.target.value)} className={field}>
-                {['Online', 'Onsite', 'Office', 'Call'].map((t) => <option key={t} value={t}>{t}</option>)}
+                {/* The stored type is always offered — older meetings use
+                    "In-Person" / "Video Call", and a select that can't show
+                    the value would quietly change it on save. */}
+                {[...new Set([form.meeting_type, 'Online', 'Onsite', 'Office', 'Call'].filter(Boolean))]
+                  .map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
             </label>
             <label className="block min-w-0">
@@ -337,17 +425,48 @@ export default function ScheduleMeetingModal({ initial, relatedTo, onClose, onSa
               record's own page. */}
           <RecordPicker value={record} onChange={setRecord} />
 
+          {meetingId && (
+            <div className="rounded-xl p-3 space-y-3" style={{ background: 'var(--color-canvas)', border: '1px solid var(--color-line)' }}>
+              <span className="block text-[11px] font-bold uppercase tracking-wide" style={{ color: 'var(--color-muted)' }}>Outcome</span>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block min-w-0">
+                  <span className="block text-xs font-medium text-ink mb-1">Status</span>
+                  <select value={form.status} onChange={(e) => set('status', e.target.value)} className={field}>
+                    {[...new Set([form.status, 'Scheduled', 'Held', 'Completed', 'No Show', 'Rescheduled', 'Cancelled'].filter(Boolean))]
+                      .map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </label>
+                <label className="block min-w-0">
+                  <span className="block text-xs font-medium text-ink mb-1">Outcome</span>
+                  <input value={form.outcome} onChange={(e) => set('outcome', e.target.value)} className={field}
+                    placeholder="e.g. Interested, sending proposal" />
+                </label>
+              </div>
+              <label className="block">
+                <span className="block text-xs font-medium text-ink mb-1">Next action</span>
+                <input value={form.next_action} onChange={(e) => set('next_action', e.target.value)} className={field}
+                  placeholder="What happens next" />
+              </label>
+              <label className="block">
+                <span className="block text-xs font-medium text-ink mb-1">Meeting notes</span>
+                <textarea value={form.meeting_notes} onChange={(e) => set('meeting_notes', e.target.value)} rows={3} className={field}
+                  placeholder="What was discussed" />
+              </label>
+            </div>
+          )}
+
           <label className="block">
             <span className="block text-xs font-medium text-ink mb-1">Agenda</span>
             <textarea value={form.agenda} onChange={(e) => set('agenda', e.target.value)} rows={3} className={field}
               placeholder="What needs to be covered" />
           </label>
         </div>
+        )}
 
         {error && <p className="text-xs text-[var(--color-danger)] mt-3">{error}</p>}
 
         <div className="flex gap-2 mt-5">
-          <button type="submit" disabled={saving}
+          <button type="submit" disabled={saving || hydrating}
             className="btn-primary text-sm font-semibold px-4 py-2 rounded-lg disabled:opacity-60">
             {saving ? 'Saving…' : meetingId ? 'Save changes' : 'Create meeting'}
           </button>

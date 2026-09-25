@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import { Kanban as KanbanIcon, Search, MoreHorizontal, Eye, Pencil, LayoutGrid } from 'lucide-react';
+import { UniversalRecordEditModal } from '../../components/RecordEditModal';
+import ScheduleMeetingModal from '../../components/ScheduleMeetingModal';
 import { ModuleIcon } from '../../components/moduleIcons';
 import { accentFor, accentGradient } from '../../theme/moduleAccents';
 import { avatarGradientFor, initialsOf } from '../../theme/avatarColors';
@@ -90,6 +92,7 @@ export default function UniversalList() {
   const [statusFilter, setStatusFilter] = useState('');
   const [page, setPage] = useState(1);
   const [openMenu, setOpenMenu] = useState(null);
+  const [editingId, setEditingId] = useState(null);   // row being edited in the popup
   const [kpiFilter, setKpiFilter] = useState(null);
   const [fieldErrors, setFieldErrors] = useState({});
   const PAGE_SIZE = 25;
@@ -403,7 +406,7 @@ export default function UniversalList() {
                   <th className="py-3 px-4 t-meta font-semibold text-right"></th>
                 </>
               )}
-              {can(module.api_name, 'edit') && <th className="py-3 px-4 font-medium text-right w-10" />}
+              {can(module.api_name, 'edit') && <th className="py-3 px-4 font-medium text-right whitespace-nowrap">Actions</th>}
             </tr>
           </thead>
           <tbody>
@@ -480,12 +483,16 @@ export default function UniversalList() {
                     ); })()}
                   </td>
                 )}
+                {/* Edit opens the same popup as the detail page, right here —
+                    no trip to the record and back to find your place in the
+                    list again. Shown only to roles with edit on this module. */}
                 {can(module.api_name, 'edit') && (
-                  <td className="py-3 px-4 text-right">
-                    <button onClick={(e) => { e.stopPropagation(); navigate(`/records/${module.api_name}/${r.id}?edit=1`); }}
-                      title={`Edit this ${singularLabel.toLowerCase()}`}
-                      className="w-7 h-7 rounded-lg inline-flex items-center justify-center hover:bg-canvas">
-                      <Pencil className="w-3.5 h-3.5 text-slate-500" />
+                  <td className="py-3 px-4 text-right whitespace-nowrap">
+                    <button onClick={(e) => { e.stopPropagation(); setEditingId(r.id); }}
+                      title={`Edit this ${singularLabel.toLowerCase()}`} aria-label={`Edit ${singularLabel.toLowerCase()}`}
+                      className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg border border-line bg-white transition-colors hover:border-[var(--color-brand-border)] hover:bg-[var(--color-brand-faint)]"
+                      style={{ color: 'var(--color-ink)' }}>
+                      <Pencil className="w-3.5 h-3.5" style={{ color: accent.solid }} /> Edit
                     </button>
                   </td>
                 )}
@@ -526,6 +533,19 @@ export default function UniversalList() {
         )}
       </div>
       </div>
+
+      {editingId && module.api_name === 'meetings' && (
+        <ScheduleMeetingModal initial={{ meeting_id: editingId }}
+          onClose={() => setEditingId(null)}
+          onSaved={() => { setEditingId(null); load(); }} />
+      )}
+      {editingId && module.api_name !== 'meetings' && (
+        <UniversalRecordEditModal
+          moduleApiName={module.api_name} recordId={editingId}
+          module={module} fields={fields}
+          onClose={() => setEditingId(null)}
+          onSaved={() => { setEditingId(null); load(); }} />
+      )}
     </div>
   );
 }

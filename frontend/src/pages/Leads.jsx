@@ -2,11 +2,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   UserPlus, List, Columns3, Search, Mail, Phone, Clock, Download, X,
-  Users as UsersIcon, Sparkles, TrendingUp, CheckCircle2, XCircle, MoreVertical, Plus,
+  Users as UsersIcon, Sparkles, TrendingUp, CheckCircle2, XCircle, MoreVertical, Plus, Pencil,
 } from 'lucide-react';
 import { api } from '../api';
 import { usePermissions } from '../context/usePermissions';
 import { downloadCSV } from '../utils/csv';
+import LeadEditModal from '../components/LeadEditModal';
 import {
   PageHeader, KpiCard, Badge, Avatar, SkeletonRows, SkeletonCards, ErrorState, EmptyState, toneFor,
   friendlyError,
@@ -413,6 +414,7 @@ export default function Leads() {
   const [ownerFilter, setOwnerFilter] = useState('');
   const [q, setQ] = useState('');
   const [addFor, setAddFor] = useState(null);
+  const [editingId, setEditingId] = useState(null);   // lead being edited in the popup
 
   const load = () => {
     setError(null);
@@ -562,6 +564,7 @@ export default function Leads() {
                   {['Lead', 'Contact', 'Source', 'Status', 'Rating', 'Assigned To', 'Next Follow-up', 'Created'].map((h) => (
                     <th key={h} className="py-2.5 px-4 t-meta font-semibold whitespace-nowrap">{h}</th>
                   ))}
+                  {can('leads', 'edit') && <th className="py-2.5 px-4 t-meta font-semibold text-right whitespace-nowrap">Actions</th>}
                 </tr>
               </thead>
               <tbody>
@@ -594,6 +597,17 @@ export default function Leads() {
                       ) : <span className="text-[var(--color-faint)]">—</span>}
                     </td>
                     <td className="py-3 px-4 t-meta whitespace-nowrap">{relative(l.created_at) || '—'}</td>
+                    {/* Same popup as the lead's own page, opened in place.
+                        Only for roles with edit on Leads. */}
+                    {can('leads', 'edit') && (
+                      <td className="py-3 px-4 text-right whitespace-nowrap">
+                        <button onClick={() => setEditingId(l.id)} aria-label={`Edit ${l.student_name}`} title="Edit lead"
+                          className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg border border-line bg-white transition-colors hover:border-[var(--color-brand-border)] hover:bg-[var(--color-brand-faint)]"
+                          style={{ color: 'var(--color-ink)' }}>
+                          <Pencil className="w-3.5 h-3.5" style={{ color: 'var(--color-brand)' }} /> Edit
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -603,6 +617,12 @@ export default function Leads() {
             Showing {filtered.length} of {list.length} lead{list.length === 1 ? '' : 's'}
           </div>
         </div>
+      )}
+
+      {editingId && (
+        <LeadEditModal leadId={editingId}
+          onClose={() => setEditingId(null)}
+          onSaved={() => { setEditingId(null); load(); }} />
       )}
 
       {addFor && (

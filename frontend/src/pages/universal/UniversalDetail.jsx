@@ -10,7 +10,8 @@ import { getFieldValue, formatFieldValue, renderFieldValue, FieldInput, recordTi
 import { computeFollowupStatus, findFollowupField } from './followupUtils';
 import AddRelatedModal, { canCreateRelation, relationTargetModule } from './AddRelatedModal';
 import ScheduleMeetingModal from '../../components/ScheduleMeetingModal';
-import MeetingCard from '../../components/MeetingCard';
+import { MeetingList } from '../../components/MeetingCard';
+import { UniversalRecordEditModal, groupFields } from '../../components/RecordEditModal';
 import WhatsAppTemplateModal from '../../components/WhatsAppTemplateModal';
 import { accentFor } from '../../theme/moduleAccents';
 import { avatarGradientFor, initialsOf } from '../../theme/avatarColors';
@@ -229,35 +230,9 @@ function DetailRow({ label, value }) {
   );
 }
 
-// Splits an ungrouped field list into labelled cards. When a module has no
-// layout configured in Settings, the Overview previously dumped every
-// field into one undifferentiated block. Grouping by what the field IS
-// gives the page structure without requiring anyone to configure a layout
-// first — and a module that DOES have a layout still uses it, untouched.
-const FIELD_GROUPS = [
-  { title: 'Contact', match: /email|phone|mobile|website|fax/i },
-  { title: 'Address', match: /address|city|state|country|postal|zip|street/i },
-  { title: 'Commercial', match: /amount|value|revenue|price|total|currency|discount|tax|payment|billing/i },
-  { title: 'Ownership', match: /owner|assigned|team|created_by|source/i },
-  { title: 'Dates', match: /date|_at$|expiry|renewal|valid/i },
-];
-
-function groupFields(fieldList) {
-  const groups = new Map();
-  const primary = [];
-  fieldList.forEach((f) => {
-    const g = FIELD_GROUPS.find((x) => x.match.test(f.api_name));
-    if (!g) { primary.push(f); return; }
-    if (!groups.has(g.title)) groups.set(g.title, []);
-    groups.get(g.title).push(f);
-  });
-  const out = [];
-  if (primary.length) out.push({ title: 'Details', fields: primary });
-  FIELD_GROUPS.forEach((g) => {
-    if (groups.has(g.title)) out.push({ title: g.title, fields: groups.get(g.title) });
-  });
-  return out;
-}
+// Field grouping (Contact / Address / Commercial…) lives with the edit popup
+// in components/RecordEditModal, imported above, so the page and the popup
+// can never group a field differently.
 
 function FollowUpPanel({ module, fields, record, onUpdated }) {
   const followupField = useMemo(() => findFollowupField(fields), [fields]);
@@ -595,8 +570,6 @@ export default function UniversalDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [editing, setEditing] = useState(false);
-  const [form, setForm] = useState({});
-  const [saving, setSaving] = useState(false);
   const [tab, setTab] = useState('overview');
   const [addingRelation, setAddingRelation] = useState(null);
   const [schedulingMeeting, setSchedulingMeeting] = useState(false);
@@ -652,17 +625,15 @@ export default function UniversalDetail() {
       .filter(([, v]) => v.length === 0 || typeof v[0] === 'object');
   }, [record]);
 
-  const startEdit = () => {
-    const initial = {};
-    editFields.forEach((f) => { initial[f.api_name] = getFieldValue(record, f); });
-    setForm(initial);
-    setEditing(true);
-  };
+  // Edit opens the shared popup (components/RecordEditModal) — every
+  // editable field, grouped the way this page groups them, over the page
+  // rather than replacing the Overview tab, and the same popup the list
+  // view's pencil opens.
+  const startEdit = () => setEditing(true);
 
-  // The List view's row-level edit (pencil icon) deep-links here with
-  // ?edit=1 rather than duplicating the edit form on that page — this is
-  // the only place that form exists. Fires once, as soon as the record and
-  // its editable fields are actually ready to populate the form from.
+  // ?edit=1 opens the edit popup on arrival. The list view now opens the
+  // popup in place instead of linking here, but links already shared or
+  // bookmarked with ?edit=1 keep working.
   //
   // THESE TWO HOOKS MUST STAY ABOVE THE EARLY RETURNS BELOW. They used to sit
   // under them, which meant the first render (loading) ran fewer hooks than
@@ -684,33 +655,6 @@ export default function UniversalDetail() {
   if (loading) return <div className="py-8 t-meta">Loading…</div>;
   if (error) return <div className="py-8 text-sm" style={{ color: "var(--color-danger)" }}>{error}</div>;
   if (!module || !record) return null;
-
-  const save = async () => {
-    setSaving(true);
-    try {
-      // System fields (real columns) go through the module's own record
-      // update; non-system fields on a standard (table-backed) module go
-      // through the separate custom-field-values endpoint instead — a
-      // custom module has no system fields at all, so this collapses to a
-      // single universalUpdate call for it, same as before.
-      const systemPayload = {};
-      const customPayload = {};
-      editFields.forEach((f) => {
-        if (module.table_name && !f.is_system) customPayload[f.api_name] = form[f.api_name];
-        else systemPayload[f.api_name] = form[f.api_name];
-      });
-      const calls = [];
-      if (Object.keys(systemPayload).length) calls.push(api.universalUpdate(module, id, systemPayload));
-      if (Object.keys(customPayload).length) calls.push(api.saveCustomFieldValues(module.api_name, id, customPayload));
-      await Promise.all(calls);
-      setEditing(false);
-      load();
-    } catch (err) {
-      alert('Could not save: ' + err.message);
-    } finally {
-      setSaving(false);
-    }
-  };
 
   const remove = async () => {
     if (!confirm(`Delete this ${module.singular_label.toLowerCase()}? This cannot be undone.`)) return;
@@ -917,7 +861,7 @@ export default function UniversalDetail() {
             </div>
           )}
 
-          {can(module.api_name, 'edit') && !editing && (
+          {can(module.api_name, 'edit') && (
             <button onClick={startEdit} className="border border-line text-sm font-medium px-4 py-2 rounded-lg hover:bg-white inline-flex items-center gap-2">
               <Pencil className="w-4 h-4" /> Edit
             </button>
@@ -1041,25 +985,8 @@ export default function UniversalDetail() {
       </div>
 
       {tab === 'overview' && (
-        <div className={editing ? 'card p-5 mt-5' : 'mt-5'}>
-          {editing ? (
-            <>
-              <div className="grid grid-cols-2 gap-4">
-                {editFields.map((f) => (
-                  <div key={f.id} className={f.field_type === 'textarea' ? 'col-span-2' : ''}>
-                    <label className="text-xs text-slate-500 font-medium block mb-1">{f.label}</label>
-                    <FieldInput field={f} value={form[f.api_name]} onChange={(v) => setForm({ ...form, [f.api_name]: v })} />
-                  </div>
-                ))}
-              </div>
-              <div className="flex gap-2 mt-4">
-                <button onClick={save} disabled={saving} className="btn btn-primary disabled:opacity-50">
-                  {saving ? 'Saving…' : 'Save changes'}
-                </button>
-                <button onClick={() => setEditing(false)} className="btn btn-secondary">Cancel</button>
-              </div>
-            </>
-          ) : layout?.sections?.length > 0 ? (
+        <div className="mt-5">
+          {layout?.sections?.length > 0 ? (
             <div className="grid md:grid-cols-2 gap-4">
               {layout.sections.map((section, si) => (
                 <div key={si} className="border border-line rounded-xl p-4">
@@ -1118,15 +1045,9 @@ export default function UniversalDetail() {
               row of raw column values answers badly. Same component the lead's
               Meetings tab renders, so the two match by construction. */}
           {key === 'meetings' ? (
-            rows.length === 0
-              ? <div className="card py-8 text-center text-slate-400 text-sm shadow-sm">No meetings yet.</div>
-              : (
-                <div className="space-y-2">
-                  {[...rows]
-                    .sort((a, b) => String(b.start_datetime || '').localeCompare(String(a.start_datetime || '')))
-                    .map((m) => <MeetingCard key={m.id} meeting={m} />)}
-                </div>
-              )
+            <div className="card p-4 shadow-sm">
+              <MeetingList meetings={rows} emptyText="No meetings yet." />
+            </div>
           ) : (
           <div className="card overflow-hidden overflow-x-auto shadow-sm">
           {rows.length === 0 ? (
@@ -1196,6 +1117,22 @@ export default function UniversalDetail() {
           parentId={id} parentLabel={title}
           onClose={() => setAddingRelation(null)}
           onCreated={() => { setAddingRelation(null); load(); }} />
+      )}
+
+      {/* A meeting is edited in the meeting form, not the generic popup:
+          only that form syncs the change to the calendar and to Google /
+          Outlook — the same single path used to book it. */}
+      {editing && module.api_name === 'meetings' && (
+        <ScheduleMeetingModal initial={{ meeting_id: Number(id) }}
+          onClose={() => setEditing(false)}
+          onSaved={() => { setEditing(false); load(); }} />
+      )}
+      {editing && module.api_name !== 'meetings' && (
+        <UniversalRecordEditModal
+          moduleApiName={module.api_name} recordId={id}
+          module={module} fields={fields} record={record} layout={layout || { sections: [] }}
+          onClose={() => setEditing(false)}
+          onSaved={() => { setEditing(false); load(); }} />
       )}
 
       {/* One meeting form for the whole CRM. "Relates to" arrives filled in

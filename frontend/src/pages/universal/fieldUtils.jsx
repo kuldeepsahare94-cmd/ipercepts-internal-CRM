@@ -46,7 +46,9 @@ export function parseOptions(field) {
   try { return JSON.parse(field.options_json || '[]'); } catch { return []; }
 }
 
-const inputClass = 'border border-line rounded-lg px-3 py-2 text-sm w-full';
+// The design system's input (focus ring, token colours) rather than a bare
+// bordered box, so every generated form matches the hand-built ones.
+const inputClass = 'input w-full';
 
 // ---------------------------------------------------------------------------
 // Lookup fields
@@ -168,9 +170,16 @@ export function FieldInput({ field, value, onChange }) {
     return <LookupPicker field={field} value={value} onChange={onChange} />;
   }
   if (field.field_type === 'dropdown' || field.field_type === 'radio') {
+    // The record's current value is always offered, even when it isn't in
+    // the configured list (a meeting marked "Held" before "Held" was dropped
+    // from the options, say). Without it the box reads "Select…" as if the
+    // field were empty, which is simply wrong about the record.
+    const current = value === null || value === undefined ? '' : String(value);
+    const known = opts.some((o) => String(o.value) === current);
     return (
-      <select className={inputClass} value={value ?? ''} onChange={(e) => onChange(e.target.value)}>
+      <select className={inputClass} value={current} onChange={(e) => onChange(e.target.value)}>
         <option value="">Select…</option>
+        {current && !known && <option value={current}>{current}</option>}
         {opts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
     );
@@ -194,7 +203,14 @@ export function FieldInput({ field, value, onChange }) {
     return <input type="number" step="any" className={inputClass} value={value ?? ''} onChange={(e) => onChange(e.target.value === '' ? '' : Number(e.target.value))} />;
   }
   if (field.field_type === 'date') {
-    return <input type="date" className={inputClass} value={value ? String(value).slice(0, 10) : ''} onChange={(e) => onChange(e.target.value)} />;
+    // Same picker as datetime, date-only. The value stays a plain
+    // "YYYY-MM-DD" in and out: a time is added only for the picker's sake and
+    // stripped again before it reaches the form.
+    const day = value ? String(value).slice(0, 10) : '';
+    return (
+      <DateTimePicker dateOnly clearable value={day ? `${day}T00:00` : ''}
+        onChange={(v) => onChange(v ? String(v).slice(0, 10) : '')} />
+    );
   }
   if (field.field_type === 'datetime') {
     // The app's own picker, not the browser's. Two reasons beyond looking
@@ -202,7 +218,7 @@ export function FieldInput({ field, value, onChange }) {
     // and it silently showed BLANK for any stored value — SQLite writes
     // "2026-09-25 18:10:00" and the native input only accepts a "T" there,
     // so editing a record quietly dropped its existing time.
-    return <DateTimePicker value={value ?? ''} onChange={onChange} />;
+    return <DateTimePicker clearable value={value ?? ''} onChange={onChange} />;
   }
   if (field.field_type === 'email') return <input type="email" className={inputClass} value={value ?? ''} onChange={(e) => onChange(e.target.value)} />;
   if (field.field_type === 'url') return <input type="url" className={inputClass} value={value ?? ''} onChange={(e) => onChange(e.target.value)} />;

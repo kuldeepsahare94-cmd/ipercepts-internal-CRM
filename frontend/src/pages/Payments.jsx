@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Download, X, Wallet, Plus } from 'lucide-react';
+import { Download, X, Wallet, Plus, Pencil } from 'lucide-react';
 import Avatar from '../components/Avatar';
 import { api } from '../api';
 import { usePermissions } from '../context/usePermissions';
 import StatusBadge from '../components/StatusBadge';
 import { downloadCSV } from '../utils/csv';
 import { PageHeader } from '../components/ui';
+import { UniversalRecordEditModal } from '../components/RecordEditModal';
 
 const STATUSES = ['Pending', 'Partial', 'Paid', 'Failed'];
 const MODES = ['Cash', 'UPI', 'Bank Transfer', 'Card', 'Cheque', 'Other'];
@@ -128,6 +129,7 @@ export default function Payments() {
   const [statusFilter, setStatusFilter] = useState('');
   const [editing, setEditing] = useState(null);
   const [creating, setCreating] = useState(false);
+  const [editingId, setEditingId] = useState(null);   // payment open in the edit popup
 
   const load = () => api.listPayments({ status: statusFilter }).then(setList);
   useEffect(() => { load(); }, [statusFilter]);
@@ -185,7 +187,7 @@ export default function Payments() {
               <th className="py-3 px-4 font-medium">Installment</th>
               <th className="py-3 px-4 font-medium text-right">Amount</th>
               <th className="py-3 px-4 font-medium">Status</th>
-              <th className="py-3 px-4 font-medium"></th>
+              <th className="py-3 px-4 font-medium text-right">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -203,6 +205,16 @@ export default function Payments() {
                 <td className="py-3 px-4 text-right text-slate-700">{inr(p.amount)}</td>
                 <td className="py-3 px-4"><StatusBadge status={p.status} /></td>
                 <td className="py-3 px-4 text-right whitespace-nowrap">
+                  {/* Edit is offered until a payment is Paid. Once it is, a
+                      receipt exists for that amount and date, and changing
+                      them afterwards would make the receipt wrong. */}
+                  {can('payments', 'edit') && p.status !== 'Paid' && (
+                    <button onClick={() => setEditingId(p.id)} aria-label={`Edit ${p.payment_number}`}
+                      className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg border border-line bg-white mr-2 transition-colors hover:border-[var(--color-brand-border)] hover:bg-[var(--color-brand-faint)]"
+                      style={{ color: 'var(--color-ink)' }}>
+                      <Pencil className="w-3.5 h-3.5" style={{ color: 'var(--color-brand)' }} /> Edit
+                    </button>
+                  )}
                   {can('payments', 'edit') && p.status !== 'Paid' && (
                     <button onClick={() => setEditing(p)} className="text-xs text-amber hover:underline mr-3">Mark paid</button>
                   )}
@@ -229,6 +241,12 @@ export default function Payments() {
       </div>
 
       {editing && <MarkPaidModal payment={editing} onClose={closeModal} onSaved={saved} />}
+      {editingId && (
+        <UniversalRecordEditModal moduleApiName="payments" recordId={editingId}
+          fallbackOptions={{ status: STATUSES }}
+          onClose={() => setEditingId(null)}
+          onSaved={() => { setEditingId(null); load(); }} />
+      )}
       {creating && <NewPaymentModal onClose={() => setCreating(false)} onSaved={created} />}
     </div>
   );

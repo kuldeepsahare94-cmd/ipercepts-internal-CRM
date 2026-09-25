@@ -21,8 +21,9 @@
  * works in local time deliberately: a meeting at 3pm means 3pm where the
  * person booking it is sitting.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Calendar as CalendarIcon, ChevronLeft, ChevronRight, Clock } from 'lucide-react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { Calendar as CalendarIcon, ChevronLeft, ChevronRight, Clock, X } from 'lucide-react';
 
 const DAYS = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'];
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
@@ -89,6 +90,7 @@ export default function DateTimePicker({
   // native <input type="date"> — which is the same cross-browser mess this
   // component exists to get away from — the time column is simply dropped.
   dateOnly = false,
+  clearable = false,
   placeholder, id,
 }) {
   const selected = fromLocalValue(value);
@@ -96,24 +98,68 @@ export default function DateTimePicker({
   const [cursor, setCursor] = useState(() => selected || roundedNow(step));   // month being shown
   const [focusDay, setFocusDay] = useState(() => selected || roundedNow(step));
   const box = useRef(null);
+  const pop = useRef(null);
   const timeList = useRef(null);
+  const [place, setPlace] = useState(null);   // { top, left, width, up }
 
   useEffect(() => {
     if (!open) return undefined;
-    const away = (e) => { if (box.current && !box.current.contains(e.target)) setOpen(false); };
-    const key = (e) => { if (e.key === 'Escape') setOpen(false); };
+    // The panel lives in a portal, so "inside" means inside the trigger OR
+    // inside the panel — checking the trigger alone would close it on every
+    // click in the calendar.
+    const away = (e) => {
+      if (box.current?.contains(e.target) || pop.current?.contains(e.target)) return;
+      setOpen(false);
+    };
+    // Capture phase + preventDefault: Escape closes this panel and only this
+    // panel. The popup the picker sits in listens for Escape too, and checks
+    // defaultPrevented, so one keypress doesn't throw away the whole form.
+    const key = (e) => { if (e.key === 'Escape') { e.preventDefault(); setOpen(false); } };
     document.addEventListener('mousedown', away);
-    document.addEventListener('keydown', key);
-    return () => { document.removeEventListener('mousedown', away); document.removeEventListener('keydown', key); };
+    document.addEventListener('keydown', key, true);
+    return () => { document.removeEventListener('mousedown', away); document.removeEventListener('keydown', key, true); };
   }, [open]);
 
-  // Scroll the chosen time into view when the panel opens, so the current
-  // value is visible rather than the list starting at midnight.
+  // WHERE THE PANEL GOES
+  // It is drawn in a portal with fixed positioning rather than as a child of
+  // the field. As a child it was clipped by whatever scrolling box the field
+  // sat in — a field near the bottom of an edit popup opened a calendar you
+  // had to scroll the popup to see. Measured from the trigger each time the
+  // page scrolls or resizes, and flipped above the field when there isn't
+  // room below.
+  useLayoutEffect(() => {
+    if (!open) { setPlace(null); return undefined; }
+    const measure = () => {
+      const r = box.current?.querySelector('[data-dtp-trigger]')?.getBoundingClientRect();
+      if (!r) return;
+      const width = Math.min(dateOnly ? 300 : 420, window.innerWidth - 16);
+      const height = pop.current?.offsetHeight || (dateOnly ? 330 : 370);
+      const below = window.innerHeight - r.bottom;
+      const up = below < height + 12 && r.top > below;
+      const left = Math.max(8, Math.min(r.left, window.innerWidth - width - 8));
+      const top = up ? Math.max(8, r.top - height - 4) : r.bottom + 4;
+      setPlace({ top, left, width, up });
+    };
+    measure();
+    // Second pass once the panel has rendered and its real height is known.
+    const raf = requestAnimationFrame(measure);
+    window.addEventListener('resize', measure);
+    window.addEventListener('scroll', measure, true);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('scroll', measure, true);
+    };
+  }, [open, dateOnly]);
+
+  // Put the chosen time in the middle of the list when the panel opens.
+  // Set on the list itself — scrollIntoView would also scroll the page or the
+  // popup behind it to "reveal" an element that is already visible.
   useEffect(() => {
-    if (!open || !timeList.current) return;
+    if (!open || !place || !timeList.current) return;
     const el = timeList.current.querySelector('[data-selected="true"]');
-    if (el) el.scrollIntoView({ block: 'center' });
-  }, [open]);
+    if (el) timeList.current.scrollTop = el.offsetTop - timeList.current.clientHeight / 2 + el.clientHeight / 2;
+  }, [open, place === null]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const slots = useMemo(() => {
     const every = minuteSteps || step;
@@ -123,6 +169,16 @@ export default function DateTimePicker({
   }, [step, minuteSteps]);
 
   const grid = useMemo(() => monthGrid(cursor.getFullYear(), cursor.getMonth()), [cursor]);
+  // A century back (birthdays) to ten years ahead (renewals, expiries), always
+  // including whatever year is currently on screen.
+  const years = useMemo(() => {
+    const now = new Date().getFullYear();
+    const lo = Math.min(now - 100, cursor.getFullYear());
+    const hi = Math.max(now + 10, cursor.getFullYear());
+    const out = [];
+    for (let y = hi; y >= lo; y -= 1) out.push(y);
+    return out;
+  }, [cursor]);
   const today = new Date();
 
   const commit = (date) => {
@@ -184,23 +240,44 @@ export default function DateTimePicker({
         </span>
       )}
 
-      <button type="button" id={id} onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors"
-        style={{
-          background: '#fff',
-          border: `1px solid ${open ? 'var(--color-brand)' : 'var(--color-line)'}`,
-          boxShadow: open ? '0 0 0 3px var(--color-brand-soft)' : 'none',
-        }}>
-        <CalendarIcon className="w-4 h-4 shrink-0" style={{ color: 'var(--color-faint)' }} />
-        <span className="text-[13px] truncate" style={{ color: selected ? 'var(--color-ink)' : 'var(--color-faint)' }}>
-          {selected ? formatDisplay(selected, dateOnly) : (placeholder || (dateOnly ? 'Pick a date' : 'Pick a date and time'))}
-        </span>
-      </button>
+      <div data-dtp-trigger className="relative">
+        <button type="button" id={id}
+          onClick={() => {
+            // Open on the month of the current value, not whichever month
+            // was on screen when the field first mounted.
+            if (!open && selected) { setCursor(selected); setFocusDay(selected); }
+            setOpen((v) => !v);
+          }}
+          className="w-full flex items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors"
+          style={{
+            background: '#fff',
+            border: `1px solid ${open ? 'var(--color-brand)' : 'var(--color-line)'}`,
+            boxShadow: open ? '0 0 0 3px var(--color-brand-soft)' : 'none',
+            paddingRight: clearable && selected ? 32 : undefined,
+          }}>
+          <CalendarIcon className="w-4 h-4 shrink-0" style={{ color: 'var(--color-faint)' }} />
+          <span className="text-[13px] truncate" style={{ color: selected ? 'var(--color-ink)' : 'var(--color-faint)' }}>
+            {selected ? formatDisplay(selected, dateOnly) : (placeholder || (dateOnly ? 'Pick a date' : 'Pick a date and time'))}
+          </span>
+        </button>
+        {/* An optional date (birthday, follow-up) has to be removable, not
+            just changeable — otherwise once set it can never be blank again. */}
+        {clearable && selected && (
+          <button type="button" aria-label="Clear date" title="Clear"
+            onClick={() => { onChange(''); setOpen(false); }}
+            className="absolute right-2 top-1/2 -translate-y-1/2 w-5 h-5 rounded flex items-center justify-center hover:bg-[var(--color-canvas)]">
+            <X className="w-3.5 h-3.5" style={{ color: 'var(--color-faint)' }} />
+          </button>
+        )}
+      </div>
 
-      {open && (
-        <div className="relative">
-          <div className="absolute z-40 mt-1 rounded-xl overflow-hidden"
-            style={{ background: '#fff', border: '1px solid var(--color-line)', boxShadow: '0 12px 28px rgba(23,35,60,.16)', width: 'min(420px, 92vw)' }}>
+      {open && createPortal(
+          <div ref={pop} className="fixed z-[90] rounded-xl overflow-hidden"
+            style={{
+              background: '#fff', border: '1px solid var(--color-line)', boxShadow: '0 12px 28px rgba(23,35,60,.16)',
+              top: place ? place.top : -9999, left: place ? place.left : -9999, width: place ? place.width : 420,
+              visibility: place ? 'visible' : 'hidden',
+            }}>
 
             <div className="flex flex-wrap gap-1.5 px-3 pt-3">
               {quick.map((q) => (
@@ -222,8 +299,21 @@ export default function DateTimePicker({
                     className="p-1 rounded hover:bg-[var(--color-canvas)]">
                     <ChevronLeft className="w-4 h-4" style={{ color: 'var(--color-muted)' }} />
                   </button>
-                  <span className="text-[12px] font-bold" style={{ color: 'var(--color-ink)' }}>
-                    {MONTHS[cursor.getMonth()]} {cursor.getFullYear()}
+                  {/* Month and year are pickable directly. With arrows alone a
+                      date of birth thirty years back is 360 clicks away. */}
+                  <span className="flex items-center gap-0.5">
+                    <select aria-label="Month" value={cursor.getMonth()}
+                      onChange={(e) => setCursor(new Date(cursor.getFullYear(), Number(e.target.value), 1))}
+                      className="text-[12px] font-bold bg-transparent rounded px-1 py-0.5 cursor-pointer hover:bg-[var(--color-canvas)]"
+                      style={{ color: 'var(--color-ink)', border: 'none', outline: 'none' }}>
+                      {MONTHS.map((m, i) => <option key={m} value={i}>{m}</option>)}
+                    </select>
+                    <select aria-label="Year" value={cursor.getFullYear()}
+                      onChange={(e) => setCursor(new Date(Number(e.target.value), cursor.getMonth(), 1))}
+                      className="text-[12px] font-bold bg-transparent rounded px-1 py-0.5 cursor-pointer hover:bg-[var(--color-canvas)]"
+                      style={{ color: 'var(--color-ink)', border: 'none', outline: 'none' }}>
+                      {years.map((y) => <option key={y} value={y}>{y}</option>)}
+                    </select>
                   </span>
                   <button type="button" aria-label="Next month"
                     onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1))}
@@ -266,7 +356,7 @@ export default function DateTimePicker({
 
               {/* Time list */}
               {!dateOnly && (
-              <div className="shrink-0 overflow-y-auto thin-scroll py-2"
+              <div className="relative shrink-0 overflow-y-auto thin-scroll py-2"
                 ref={timeList} style={{ width: 104, borderLeft: '1px solid var(--color-line)' }}>
                 <div className="px-2 pb-1 flex items-center gap-1">
                   <Clock className="w-3 h-3" style={{ color: 'var(--color-faint)' }} />
@@ -291,8 +381,8 @@ export default function DateTimePicker({
               </div>
               )}
             </div>
-          </div>
-        </div>
+          </div>,
+          document.body,
       )}
     </div>
   );

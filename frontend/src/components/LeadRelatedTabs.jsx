@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Paperclip, Download, PhoneCall, CheckSquare, TrendingUp } from 'lucide-react';
 import { api } from '../api';
-import MeetingCard from './MeetingCard';
+import { MeetingList } from './MeetingCard';
 
 /* ---------------------------------------------------------------------------
    These are REAL tables, not invented ones. calls/meetings/tasks/notes/
@@ -63,15 +63,7 @@ export function MeetingsTab({ leadId, refreshKey = 0 }) {
     return () => { cancelled = true; };
   }, [leadId, refreshKey]);
   if (rows === null) return <p className="t-meta">Loading…</p>;
-  if (rows.length === 0) return <p className="t-meta py-3">No meetings scheduled with this lead yet.</p>;
-  // Sorted soonest-first: a meetings tab is read to answer "when am I next
-  // speaking to them", and the API returns creation order.
-  const sorted = [...rows].sort((a, b) => String(b.start_datetime || '').localeCompare(String(a.start_datetime || '')));
-  return (
-    <div className="space-y-2">
-      {sorted.map((m) => <MeetingCard key={m.id} meeting={m} />)}
-    </div>
-  );
+  return <MeetingList meetings={rows} emptyText="No meetings scheduled with this lead yet." />;
 }
 
 export function TasksTab({ leadId }) {

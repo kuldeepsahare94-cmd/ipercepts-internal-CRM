@@ -12,6 +12,8 @@ import DisposeLeadModal from '../components/DisposeLeadModal';
 import WhatsAppTemplateModal from '../components/WhatsAppTemplateModal';
 import AddRelatedModal from './universal/AddRelatedModal';
 import ScheduleMeetingModal from '../components/ScheduleMeetingModal';
+import LeadEditModal from '../components/LeadEditModal';
+import { formatFieldValue } from './universal/fieldUtils';
 import { accentFor } from '../theme/moduleAccents';
 import { avatarGradientFor } from '../theme/avatarColors';
 import { CallsTab, MeetingsTab, TasksTab, DocumentsTab, DealsTab, NotesTab } from '../components/LeadRelatedTabs';
@@ -321,12 +323,29 @@ export default function LeadDetail() {
   const [note, setNote] = useState('');
   const [scheduling, setScheduling] = useState(false);
   const [scheduleDate, setScheduleDate] = useState('');
+  // One popup for every field on the lead. `editing` is false, or the name of
+  // the section to open it at (a card's own Edit link scrolls to that card).
   const [editing, setEditing] = useState(false);
-  const [form, setForm] = useState(null);
+  const [customFields, setCustomFields] = useState([]);   // [{ field, value }]
   const scoring = useLeadScore(id);
   const { prevId, nextId, loaded: navLoaded } = usePrevNext(id);
 
-  const load = () => api.getLead(id).then((l) => { setLead(l); setForm(l); });
+  const load = () => api.getLead(id).then((l) => { setLead(l); loadCustomFields(); });
+
+  // Custom fields an admin has added to Leads in Settings. They are editable
+  // in the popup, so they have to be readable on the page too — otherwise a
+  // value could be set and never seen again.
+  const loadCustomFields = () => {
+    api.getModuleMeta('leads')
+      .then((mod) => api.listModuleFields(mod.id))
+      .then(async (fields) => {
+        const custom = (fields || []).filter((f) => !f.is_system && f.show_in_detail);
+        if (!custom.length) { setCustomFields([]); return; }
+        const values = await api.getCustomFieldValues('leads', id).catch(() => ({}));
+        setCustomFields(custom.map((f) => ({ field: f, value: values?.[f.api_name] })));
+      })
+      .catch(() => setCustomFields([]));
+  };
   useEffect(() => { load(); setPageTab('overview'); }, [id]);
 
   if (!lead) return <div className="p-8 text-slate-400">Loading…</div>;
@@ -351,17 +370,20 @@ export default function LeadDetail() {
 
   const markFollowUpDone = async () => { await api.updateLead(id, { follow_up_date: null }); load(); };
 
-  const saveEdit = async (e) => {
-    e.preventDefault();
-    await api.updateLead(id, form);
-    setEditing(false);
-    load();
-  };
-
   // Conversion needs the COMPANY name, which is a different thing from the
   // lead's own name — so it asks, rather than silently defaulting. It used to
   // name every Account after the person.
   const convert = () => setConverting(true);
+
+  // Every card's Edit opens the SAME popup with every field in it — the card
+  // only decides where the popup starts scrolled to. So there is one way to
+  // edit a lead, reachable from wherever you happen to be looking.
+  const editLink = (section) => can('leads', 'edit') && (
+    <button onClick={() => setEditing(section)} className="text-xs font-medium flex items-center gap-1"
+      style={{ color: 'var(--color-brand)' }}>
+      <Pencil className="w-3 h-3" /> Edit
+    </button>
+  );
 
   const runQuickAction = (key) => {
     if (key === 'call') return setDisposing(true);
@@ -464,8 +486,8 @@ export default function LeadDetail() {
             </div>
           </div>
 
-          <div className="flex items-start gap-4 shrink-0 flex-wrap justify-end">
-            <div className="flex items-center gap-2.5">
+          <div className="flex items-start gap-4 shrink-0 max-w-full flex-wrap justify-end">
+            <div className="flex items-center gap-2.5 flex-wrap justify-end">
               <div className="rounded-xl px-3.5 py-2 text-center" style={{ background: 'var(--color-canvas)' }}>
                 <div className="t-meta mb-0.5">Lead Score</div>
                 {scoring ? (
@@ -483,6 +505,13 @@ export default function LeadDetail() {
                 )}
               </div>
 
+              {can('leads', 'edit') && (
+                <button onClick={() => setEditing(true)}
+                  className="flex items-center gap-1.5 text-sm font-semibold px-4 py-2.5 rounded-xl h-fit border border-line bg-white hover:bg-[var(--color-canvas)]"
+                  style={{ color: 'var(--color-ink)' }}>
+                  <Pencil className="w-4 h-4" /> Edit
+                </button>
+              )}
               {can('leads', 'edit') && !lead.converted_contact_id && (
                 <button onClick={convert} className="flex items-center gap-1.5 text-white text-sm font-semibold px-4 py-2.5 rounded-xl h-fit" style={{ background: 'var(--color-brand)' }}>
                   <UserCheck className="w-4 h-4" /> Convert Lead
@@ -567,20 +596,6 @@ export default function LeadDetail() {
         </div>
       )}
 
-      {/* Edit form */}
-      {editing && (
-        <form onSubmit={saveEdit} className="card p-5 mt-4 grid grid-cols-2 gap-3">
-          <input placeholder="Name" className="border border-line rounded-lg px-3 py-2 text-sm col-span-2" value={form.student_name || ''} onChange={(e) => setForm({ ...form, student_name: e.target.value })} />
-          <input placeholder="Mobile" className="input w-auto" value={form.mobile || ''} onChange={(e) => setForm({ ...form, mobile: e.target.value })} />
-          <input placeholder="Alt mobile" className="input w-auto" value={form.alternate_mobile || ''} onChange={(e) => setForm({ ...form, alternate_mobile: e.target.value })} />
-          <input placeholder="Email" className="input w-auto" value={form.email || ''} onChange={(e) => setForm({ ...form, email: e.target.value })} />
-          <input placeholder="City" className="input w-auto" value={form.city || ''} onChange={(e) => setForm({ ...form, city: e.target.value })} />
-          <div className="col-span-2 flex gap-2">
-            <button type="submit" className="bg-amber text-white text-sm font-medium px-4 py-2 rounded-lg">Save</button>
-            <button type="button" onClick={() => setEditing(false)} className="border border-line text-sm font-medium px-4 py-2 rounded-lg"><X className="w-4 h-4" /></button>
-          </div>
-        </form>
-      )}
 
       {/* Page-level tabs */}
       <div className="flex gap-5 mt-6 mb-5 border-b border-line overflow-x-auto thin-scroll">
@@ -626,29 +641,28 @@ export default function LeadDetail() {
             <div className="grid sm:grid-cols-2 gap-4">
               <div className="card p-4">
                 <CardHeader icon={Info} title="Basic Information" tint={ACCENT.solid}
-                  action={can('leads', 'edit') && (
-                    <button onClick={() => setEditing(true)} className="text-xs font-medium flex items-center gap-1" style={{ color: 'var(--color-brand)' }}>
-                      <Pencil className="w-3 h-3" /> Edit
-                    </button>
-                  )} />
+                  action={editLink('Basic Information')} />
                 <dl className="text-sm space-y-1.5">
                   <Row label="Full Name" value={lead.student_name} strong />
+                  <Row label="Company" value={lead.account_name} />
                   <Row label="Mobile" value={lead.mobile} />
                   <Row label="Alternate Mobile" value={lead.alternate_mobile} />
                   <Row label="Email" value={lead.email} />
                   <Row label="City" value={lead.city} />
+                  <Row label="Address" value={lead.address} />
                   <Row label="Source" value={lead.source} />
+                  <Row label="Owner" value={lead.assigned_counselor} />
                   <Row label="Created On" value={lead.created_at?.slice(0, 10)} />
                   <Row label="Last Activity" value={lead.activities?.[0]
                     ? `${lead.activities[0].type} on ${String(lead.activities[0].created_at).slice(0, 10)}` : null} />
-                  <Row label="Owner" value={lead.assigned_counselor} />
                   <Row label="Lead ID" value={`L-${String(lead.id).padStart(4, '0')}`} />
                 </dl>
               </div>
 
               <div className="space-y-4">
                 <div className="card p-4">
-                  <CardHeader icon={TrendingUp} title="Additional Details" tint="#D97706" />
+                  <CardHeader icon={TrendingUp} title="Additional Details" tint="#D97706"
+                    action={editLink('Additional Details')} />
                   <dl className="text-sm space-y-1.5">
                     <Row label="Product Interest" value={lead.product_interest} />
                     <Row label="Service Interest" value={lead.service_interest} />
@@ -658,12 +672,27 @@ export default function LeadDetail() {
                 </div>
 
                 <div className="card p-4">
-                  <CardHeader icon={UserCheck} title="Personal Information" tint="#0D9488" />
+                  <CardHeader icon={UserCheck} title="Personal Information" tint="#0D9488"
+                    action={editLink('Personal Information')} />
                   <dl className="text-sm space-y-1.5">
                     <Row label="Gender" value={lead.gender} />
-                    <Row label="Date of Birth" value={lead.date_of_birth} />
+                    <Row label="Date of Birth" value={lead.date_of_birth ? String(lead.date_of_birth).slice(0, 10) : null} />
+                    <Row label="Qualification" value={lead.qualification} />
                   </dl>
                 </div>
+
+                {customFields.length > 0 && (
+                  <div className="card p-4">
+                    <CardHeader icon={Info} title="More Details" tint="#7C3AED"
+                      action={editLink('More Details')} />
+                    <dl className="text-sm space-y-1.5">
+                      {customFields.map(({ field, value }) => (
+                        <Row key={field.api_name} label={field.label}
+                          value={value === null || value === undefined || value === '' ? null : formatFieldValue(value, field)} />
+                      ))}
+                    </dl>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -839,6 +868,13 @@ export default function LeadDetail() {
         <AddRelatedModal relationKey={addingRelation} parentModule="leads" parentId={id} parentLabel={lead.student_name}
           onClose={() => setAddingRelation(null)}
           onCreated={() => { setAddingRelation(null); load(); }} />
+      )}
+
+      {editing && (
+        <LeadEditModal leadId={id} lead={lead}
+          focusSection={typeof editing === 'string' ? editing : undefined}
+          onClose={() => setEditing(false)}
+          onSaved={() => { setEditing(false); load(); }} />
       )}
 
       {/* The same component the Calendar's "+ New meeting" renders — same
