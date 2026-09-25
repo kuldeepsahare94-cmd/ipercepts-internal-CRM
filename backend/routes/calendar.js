@@ -530,7 +530,12 @@ router.get('/suggest', requirePermission('calendar', 'view'), (req, res) => {
     // are, not 9am UTC.
     const offsetMinutes = Number(req.query.tz_offset || 0);
 
-    const localMidnightUtc = new Date(`${date}T00:00:00Z`).getTime() + offsetMinutes * 60000;
+    // MINUS, not plus. `tz_offset` is how far ahead of UTC the caller is, so
+    // midnight in their zone is that much EARLIER in UTC: local midnight in
+    // Kolkata (+330) is 18:30Z the day before. Adding it instead shifted the
+    // whole working day by twice the offset, which is why a user in India was
+    // offered "free time" starting at 8pm and running past midnight.
+    const localMidnightUtc = new Date(`${date}T00:00:00Z`).getTime() - offsetMinutes * 60000;
     const from = new Date(localMidnightUtc + dayStartHour * 3600000).toISOString();
     const to = new Date(localMidnightUtc + dayEndHour * 3600000).toISOString();
 
