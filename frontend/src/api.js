@@ -221,6 +221,13 @@ export const api = {
   securityAuditLog: (params) => req('GET', '/security/audit-log' + qs(params)),
 
   listUsers: () => req('GET', '/users'),
+  // Names of users (and teams) that records can be assigned to — open to any
+  // signed-in user, unlike listUsers which needs users:view.
+  userDirectory: () => req('GET', '/users/directory'),
+  // Saved list filters, per module
+  listSavedFilters: (module) => req('GET', `/saved-filters?module=${encodeURIComponent(module)}`),
+  saveFilter: (body) => req('POST', '/saved-filters', body),
+  deleteSavedFilter: (id) => req('DELETE', `/saved-filters/${id}`),
   createUser: (body) => req('POST', '/users', body),
   updateUser: (id, body) => req('PUT', `/users/${id}`, body),
   deleteUser: (id) => req('DELETE', `/users/${id}`),

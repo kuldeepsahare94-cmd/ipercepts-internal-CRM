@@ -20,6 +20,8 @@ import DocumentItemsPanel from './DocumentItemsPanel';
 import DocumentActionsPanel from './DocumentActionsPanel';
 import DocumentPaymentsPanel from './DocumentPaymentsPanel';
 import SubscriptionPanels, { CustomerSubscriptions } from './SubscriptionPanels';
+import AssignPicker from '../../components/AssignPicker';
+import { USER_TYPES } from './fieldUtils';
 
 // Modules whose records are sales documents: line items, a PDF, a place in a
 // conversion chain.
@@ -791,6 +793,27 @@ export default function UniversalDetail() {
                             <Send className="w-3.5 h-3.5" /> {lc.email}
                           </a>
                         )}
+                      </div>
+                    );
+                  })()}
+
+                  {/* Who owns this record, re-assignable right here. */}
+                  {(() => {
+                    const uf = fields.filter((f) => USER_TYPES.has(f.field_type) && f.is_system);
+                    if (!uf.length) return null;
+                    return (
+                      <div className="flex items-center flex-wrap gap-x-4 gap-y-1.5 mt-2">
+                        {uf.map((f) => (
+                          <span key={f.api_name} className="inline-flex items-center gap-1.5 text-sm">
+                            <span className="text-slate-500">{f.label}:</span>
+                            <AssignPicker value={record[f.api_name]} mode={f.field_type === 'user_name' ? 'name' : 'id'}
+                              label={f.label} disabled={!can(module.api_name, 'edit')}
+                              onChange={async (v) => {
+                                await api.universalUpdate(module, id, { [f.api_name]: v });
+                                setRecord((r) => ({ ...r, [f.api_name]: v }));
+                              }} />
+                          </span>
+                        ))}
                       </div>
                     );
                   })()}

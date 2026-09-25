@@ -17,6 +17,12 @@ import { computeFollowupStatus, findFollowupField } from './followupUtils';
 import { kpisFor } from './listKpis';
 import { KpiCard, SkeletonRows, ErrorState, EmptyState, friendlyError } from '../../components/ui';
 import DrillBanner, { useDrill, applyDrill } from '../../components/DrillBanner';
+import AssignPicker from '../../components/AssignPicker';
+import {
+  FilterButton, FilterPanel, ActiveFilterChips, SavedFiltersMenu, applyFilters, isComplete, useMe,
+  useSelection, RowCheckbox, BulkBar, BulkUpdateModal, BulkAssignModal, BulkDeleteModal, runBulk,
+} from '../../components/ListTools';
+import { USER_TYPES } from './fieldUtils';
 
 const STATUS_TYPES = new Set(['status', 'contact_status', 'priority']);
 
@@ -99,6 +105,16 @@ export default function UniversalList() {
   const PAGE_SIZE = 25;
   // Opened from a dashboard figure: narrow to exactly the records behind it.
   const drill = useDrill();
+  // Field filters, saved filters, row selection and bulk actions.
+  const me = useMe();
+  const [showFilters, setShowFilters] = useState(false);
+  const [conditions, setConditions] = useState([]);
+  const [match, setMatch] = useState('all');
+  const [activeSaved, setActiveSaved] = useState(null);
+  const [savedRefresh, setSavedRefresh] = useState(0);
+  const [bulk, setBulk] = useState(null);   // 'update' | 'assign' | 'delete'
+  const selection = useSelection(moduleApiName);
+  useEffect(() => { setConditions([]); setActiveSaved(null); setShowFilters(false); }, [moduleApiName]);
 
   useEffect(() => {
     setLoading(true);
@@ -163,13 +179,22 @@ export default function UniversalList() {
     // replacing them, so the two controls compose instead of fighting.
     const active = kpis?.find((k) => k.label === kpiFilter);
     if (active?.filter) rows = rows.filter(active.filter);
+    rows = applyFilters(rows, conditions, match, fields, getFieldValue, me);
     return rows;
-  }, [records, statusField, statusFilter, kpiFilter, kpis, drill.idSet, drill.active]);
+  }, [records, statusField, statusFilter, kpiFilter, kpis, drill.idSet, drill.active, conditions, match, fields, me]);
 
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pageRows = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-  useEffect(() => { setPage(1); }, [q, statusFilter, kpiFilter, moduleApiName, drill.metric]);
+  useEffect(() => { setPage(1); }, [q, statusFilter, kpiFilter, moduleApiName, drill.metric, conditions, match]);
+  // Filters that could no longer match are dropped from the selection, so a
+  // bulk action never touches a record the user can't see.
+  useEffect(() => {
+    const visible = new Set(filtered.map((r) => r.id));
+    const stale = [...selection.ids].filter((id) => !visible.has(id));
+    if (stale.length) selection.setMany(stale, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtered]);
 
   // Guard order matters. `if (!module) return null` used to run BEFORE the
   // loading check, so while the module was being fetched the page rendered
@@ -206,6 +231,45 @@ export default function UniversalList() {
   const accent = accentFor(module.api_name);
   const pluralLabel = (module.plural_label || module.api_name || 'records');
   const singularLabel = (module.singular_label || module.api_name || 'record');
+
+  // Custom fields on a standard module are stored apart from the record, so
+  // the list rows don't carry them and they can't be filtered client-side.
+  const filterFields = fields.filter((f) => !module.table_name || f.is_system);
+  const userFields = fields.filter((f) => USER_TYPES.has(f.field_type) && f.show_in_edit !== 0);
+  const canEdit = can(module.api_name, 'edit');
+  const pageIds = pageRows.map((r) => r.id);
+  const pageSelected = pageIds.length > 0 && pageIds.every((id) => selection.has(id));
+  const somePageSelected = pageIds.some((id) => selection.has(id));
+  const selectedIds = [...selection.ids];
+
+  // One record's update, through the same route a normal edit uses.
+  const updateOne = (field, value) => (id) => (module.table_name && !field.is_system
+    ? api.saveCustomFieldValues(module.api_name, id, { [field.api_name]: value })
+    : api.universalUpdate(module, id, { [field.api_name]: value }));
+  const runUpdate = async (field, value, onProgress) => {
+    const result = await runBulk(selectedIds, updateOne(field, value), onProgress);
+    load();
+    return result;
+  };
+  const runDelete = async (onProgress) => {
+    const result = await runBulk(selectedIds, (id) => api.universalDelete(module, id), onProgress, 2);
+    selection.clear();
+    load();
+    return result;
+  };
+  const exportSelected = () => downloadCSV(`${module.api_name}-selected.csv`, filtered.filter((r) => selection.has(r.id)).map((r) => {
+    const row = { id: r.id };
+    listFields.forEach((f) => {
+      const v = getFieldValue(r, f);
+      row[f.label] = f.field_type === 'lookup' ? (cachedLabel(f.lookup_module, v) ?? '') : formatFieldValue(v, f);
+    });
+    return row;
+  }));
+  // Re-assign one record straight from its row.
+  const reassign = (r, field) => async (value) => {
+    await updateOne(field, value)(r.id);
+    setRecords((rs) => rs.map((x) => (x.id === r.id ? { ...x, [field.api_name]: value } : x)));
+  };
 
   // Types where an empty value is legitimate, matching the server's list —
   // a checkbox that is off, or a file uploaded separately, is not "missing".
@@ -350,7 +414,7 @@ export default function UniversalList() {
       <div className="flex gap-2 mt-5 flex-wrap">
         <div className="relative flex-1 min-w-[220px]">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-faint)]" />
-          <input value={q} onChange={(e) => setQ(e.target.value)} className="input pl-9"
+          <input value={q} onChange={(e) => setQ(e.target.value)} style={{ paddingLeft: 36 }} className="input pl-9"
             placeholder={`Search ${pluralLabel.toLowerCase()}…`}
             aria-label={`Search ${module.plural_label}`} />
         </div>
@@ -361,7 +425,27 @@ export default function UniversalList() {
             {statusOptions.map((o) => <option key={o} value={o}>{o}</option>)}
           </select>
         )}
+        <FilterButton count={conditions.filter(isComplete).length} open={showFilters} onClick={() => setShowFilters((v) => !v)} />
+        <SavedFiltersMenu module={module.api_name} refreshKey={savedRefresh} activeId={activeSaved?.id}
+          onSelect={(f) => { setActiveSaved(f); setConditions(f ? f.filters : []); setMatch(f ? f.match : 'all'); setShowFilters(false); }} />
       </div>
+
+      {showFilters && (
+        <FilterPanel key={activeSaved?.id || 'adhoc'} module={module.api_name} fields={filterFields}
+          initial={conditions} initialMatch={match}
+          onClose={() => setShowFilters(false)}
+          onSaved={() => setSavedRefresh((n) => n + 1)}
+          onApply={(conds, m, saved) => { setConditions(conds); setMatch(m); setActiveSaved(saved || null); setShowFilters(false); }} />
+      )}
+      <ActiveFilterChips conditions={conditions} match={match} fields={filterFields} savedName={activeSaved?.name}
+        onRemove={(c) => { setConditions((cs) => cs.filter((x) => x !== c)); setActiveSaved(null); }}
+        onClear={() => { setConditions([]); setActiveSaved(null); }} />
+
+      <BulkBar count={selection.ids.size} pageCount={pageIds.length} matchingCount={filtered.length} allPageSelected={pageSelected}
+        onSelectAllMatching={() => selection.replace(filtered.map((r) => r.id))} onClear={selection.clear}
+        canEdit={canEdit} canDelete={can(module.api_name, 'delete')} canExport={can(module.api_name, 'export')}
+        hasUserField={userFields.length > 0}
+        onUpdate={() => setBulk('update')} onAssign={() => setBulk('assign')} onExport={exportSelected} onDelete={() => setBulk('delete')} />
 
       {showForm && (
         <form onSubmit={submit} className="card p-5 mt-5 grid grid-cols-2 gap-4">
@@ -405,6 +489,10 @@ export default function UniversalList() {
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left border-b-2" style={{ background: `${accent.solid}0D`, borderColor: `${accent.solid}33` }}>
+              <th className="py-3 pl-4 pr-1 w-8">
+                <RowCheckbox checked={pageSelected} indeterminate={!pageSelected && somePageSelected}
+                  label="Select all on this page" onChange={() => selection.setMany(pageIds, !pageSelected)} />
+              </th>
               {listFields.map((f) => <th key={f.id} className="py-3 px-4 font-medium">{f.label}</th>)}
               {listFields.length === 0 && <th className="py-3 px-4 font-medium">Record</th>}
               {followupField && <th className="py-3 px-4 font-medium">Follow-up</th>}
@@ -413,7 +501,6 @@ export default function UniversalList() {
                   <th className="py-3 px-4 t-meta font-semibold text-right">Contacts</th>
                   <th className="py-3 px-4 t-meta font-semibold text-right">Open deals</th>
                   <th className="py-3 px-4 t-meta font-semibold text-right">Pipeline</th>
-                  <th className="py-3 px-4 t-meta font-semibold">Owner</th>
                   <th className="py-3 px-4 t-meta font-semibold text-right"></th>
                 </>
               )}
@@ -425,7 +512,11 @@ export default function UniversalList() {
               <tr key={r.id} className="border-b border-line/60 transition-colors cursor-pointer"
                 onMouseEnter={(e) => { e.currentTarget.style.background = `${accent.solid}0A`; }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = ''; }}
-                onClick={() => navigate(`/records/${module.api_name}/${r.id}`)}>
+                onClick={() => navigate(`/records/${module.api_name}/${r.id}`)}
+                style={selection.has(r.id) ? { background: `${accent.solid}0F` } : undefined}>
+                <td className="py-3 pl-4 pr-1 w-8" onClick={(e) => e.stopPropagation()}>
+                  <RowCheckbox checked={selection.has(r.id)} label={`Select ${recordTitle(r, fields)}`} onChange={() => selection.toggle(r.id)} />
+                </td>
                 {listFields.length > 0 ? listFields.map((f, i) => (
                   <td key={f.id} className="py-3 px-4">
                     {i === 0 ? (
@@ -445,6 +536,9 @@ export default function UniversalList() {
                       </Link>
                     ) : f.api_name === statusField?.api_name ? (
                       <StatusBadge status={getFieldValue(r, f)} />
+                    ) : USER_TYPES.has(f.field_type) ? (
+                      <AssignPicker value={getFieldValue(r, f)} mode={f.field_type === 'user_name' ? 'name' : 'id'}
+                        label={f.label} disabled={!canEdit} onChange={reassign(r, f)} />
                     ) : (
                       <span className="text-slate-500">{renderFieldValue(r, f)}</span>
                     )}
@@ -475,7 +569,6 @@ export default function UniversalList() {
                         </div>
                       )}
                     </td>
-                    <td className="py-3 px-4 text-slate-500">{r.owner_name || '—'}</td>
                     <td className="py-3 px-4 text-right">
                       <Link to={`/customer-360/${r.id}`} onClick={(e) => e.stopPropagation()}
                         className="text-xs font-semibold whitespace-nowrap px-2.5 py-1.5 rounded-lg"
@@ -549,6 +642,18 @@ export default function UniversalList() {
         )}
       </div>
       </div>
+
+      {bulk === 'update' && (
+        <BulkUpdateModal fields={fields} count={selection.ids.size} noun={singularLabel.toLowerCase()}
+          onRun={runUpdate} onClose={() => { setBulk(null); }} />
+      )}
+      {bulk === 'assign' && (
+        <BulkAssignModal userFields={userFields} count={selection.ids.size} noun={singularLabel.toLowerCase()}
+          onRun={runUpdate} onClose={() => setBulk(null)} />
+      )}
+      {bulk === 'delete' && (
+        <BulkDeleteModal count={selection.ids.size} noun={singularLabel.toLowerCase()} onRun={runDelete} onClose={() => setBulk(null)} />
+      )}
 
       {editingId && module.api_name === 'meetings' && (
         <ScheduleMeetingModal initial={{ meeting_id: editingId }}

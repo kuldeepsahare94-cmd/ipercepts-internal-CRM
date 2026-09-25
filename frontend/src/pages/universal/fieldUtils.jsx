@@ -5,6 +5,12 @@ import { Search, X, Check, ChevronDown } from 'lucide-react';
 import { api } from '../../api';
 import { requestLabel, subscribe } from './lookupCache';
 import DateTimePicker from '../../components/DateTimePicker';
+import AssignPicker from '../../components/AssignPicker';
+import { useDirectory, userName, teamName } from '../../components/userDirectory';
+
+// Fields holding a person: `user` stores a user id, `user_name` stores the
+// user's name (Leads' owner column). Both are picked from active users.
+export const USER_TYPES = new Set(['user', 'user_name']);
 
 // Given a field's metadata and a record, read its current value.
 // - is_system fields on a table-backed module: read directly off the record
@@ -22,6 +28,8 @@ export function getFieldValue(record, field) {
 export function formatFieldValue(value, field) {
   if (value === undefined || value === null || value === '') return '—';
   if (field.field_type === 'checkbox') return value ? 'Yes' : 'No';
+  if (field.field_type === 'user') return userName(value) || `User #${value}`;
+  if (field.field_type === 'team') return teamName(value) || `Team #${value}`;
   if (field.field_type === 'currency') return `₹${Number(value).toLocaleString('en-IN')}`;
   if (field.field_type === 'percent') return `${value}%`;
   if (field.field_type === 'date') return String(value).slice(0, 10);
@@ -45,7 +53,27 @@ export function renderFieldValue(record, field) {
   if (field.field_type === 'lookup') {
     return <LookupValue module={field.lookup_module} value={value} />;
   }
+  if (field.field_type === 'user' || field.field_type === 'team') {
+    return <DirectoryValue field={field} value={value} />;
+  }
   return formatFieldValue(value, field);
+}
+
+function DirectoryValue({ field, value }) {
+  const dir = useDirectory();
+  if (value === null || value === undefined || value === '') return '—';
+  if (!dir) return <span className="text-slate-400">…</span>;
+  return formatFieldValue(value, field);
+}
+
+function TeamSelect({ value, onChange }) {
+  const dir = useDirectory();
+  return (
+    <select className="input w-full" value={value ?? ''} onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)}>
+      <option value="">— No team —</option>
+      {(dir?.teams || []).map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+    </select>
+  );
 }
 
 export function parseOptions(field) {
@@ -175,6 +203,13 @@ export function FieldInput({ field, value, onChange }) {
   if (field.field_type === 'lookup') {
     return <LookupPicker field={field} value={value} onChange={onChange} />;
   }
+  if (USER_TYPES.has(field.field_type)) {
+    return (
+      <AssignPicker asInput value={value} mode={field.field_type === 'user_name' ? 'name' : 'id'}
+        label={field.label || 'User'} placeholder="Select a user…" onChange={(v) => onChange(v)} />
+    );
+  }
+  if (field.field_type === 'team') return <TeamSelect value={value} onChange={onChange} />;
   if (field.field_type === 'dropdown' || field.field_type === 'radio') {
     // The record's current value is always offered, even when it isn't in
     // the configured list (a meeting marked "Held" before "Held" was dropped

@@ -9,6 +9,11 @@ import { usePermissions } from '../context/usePermissions';
 import { downloadCSV } from '../utils/csv';
 import LeadEditModal from '../components/LeadEditModal';
 import DrillBanner, { useDrill, applyDrill } from '../components/DrillBanner';
+import AssignPicker from '../components/AssignPicker';
+import {
+  FilterButton, FilterPanel, ActiveFilterChips, SavedFiltersMenu, applyFilters, isComplete, useMe,
+  useSelection, RowCheckbox, BulkBar, BulkUpdateModal, BulkAssignModal, BulkDeleteModal, runBulk,
+} from '../components/ListTools';
 import {
   PageHeader, KpiCard, Badge, Avatar, SkeletonRows, SkeletonCards, ErrorState, EmptyState, toneFor,
   friendlyError,
@@ -17,6 +22,31 @@ import {
 // The application's real lead statuses — unchanged, so nothing
 // incompatible is written to the database.
 const STATUSES = ['New', 'Contacted', 'Interested', 'Follow-up', 'Converted', 'Dropped', 'Not Interested'];
+
+// Lead columns described as fields, so the shared filter, bulk update and
+// assignment tools work on Leads exactly as on every other module.
+const optsOf = (list) => JSON.stringify(list.map((v) => ({ value: v, label: v })));
+function leadFields(statuses, sources) {
+  const f = (api_name, label, field_type, extra = {}) => ({ api_name, label, field_type, is_system: 1, show_in_edit: 1, ...extra });
+  return [
+    f('student_name', 'Lead name', 'text', { required: 1, show_in_edit: 0 }),
+    f('account_name', 'Company', 'text'),
+    f('status', 'Status', 'dropdown', { options_json: optsOf(statuses) }),
+    f('source', 'Source', 'dropdown', { options_json: optsOf(sources) }),
+    f('assigned_counselor', 'Owner', 'user_name'),
+    f('lead_rating', 'Rating', 'dropdown', { options_json: optsOf(['Hot', 'Warm', 'Cold']) }),
+    f('follow_up_date', 'Next follow-up', 'date'),
+    f('created_at', 'Created', 'date', { show_in_edit: 0 }),
+    f('city', 'City', 'text'),
+    f('email', 'Email', 'email', { show_in_edit: 0 }),
+    f('mobile', 'Mobile', 'phone', { show_in_edit: 0 }),
+    f('campaign', 'Campaign', 'text'),
+    f('product_interest', 'Product interest', 'text'),
+    f('service_interest', 'Service interest', 'text'),
+    f('lead_score', 'Lead score', 'number', { show_in_edit: 0 }),
+  ];
+}
+const leadValue = (row, field) => row[field.api_name];
 
 // Each column gets a short description, matching the reference's
 // approach of explaining what a stage means.
@@ -380,7 +410,11 @@ function AddLeadModal({ initialStatus, sources, onClose, onSaved }) {
           <section>
             <h3 className="t-meta font-semibold uppercase tracking-wide mb-2">Assignment &amp; follow-up</h3>
             <div className="grid sm:grid-cols-2 gap-3">
-              {field('Assigned to', 'assigned_counselor')}
+              <div>
+                <label className="t-meta font-medium block mb-1">Assigned to</label>
+                <AssignPicker asInput mode="name" label="Assigned to" placeholder="Select a user…"
+                  value={form.assigned_counselor || null} onChange={(v) => setForm({ ...form, assigned_counselor: v || '' })} />
+              </div>
               {field('Next follow-up', 'follow_up_date', { type: 'date' })}
             </div>
           </section>
@@ -418,6 +452,15 @@ export default function Leads() {
   const [editingId, setEditingId] = useState(null);   // lead being edited in the popup
   // Opened from a dashboard figure: narrow to exactly the leads behind it.
   const drill = useDrill();
+  // Field filters, saved filters, row selection and bulk actions.
+  const me = useMe();
+  const [showFilters, setShowFilters] = useState(false);
+  const [conditions, setConditions] = useState([]);
+  const [match, setMatch] = useState('all');
+  const [activeSaved, setActiveSaved] = useState(null);
+  const [savedRefresh, setSavedRefresh] = useState(0);
+  const [bulk, setBulk] = useState(null);
+  const selection = useSelection('leads');
 
   const load = () => {
     setError(null);
@@ -444,10 +487,41 @@ export default function Leads() {
   );
 
   // Source/owner filter client-side; status and search go to the API.
-  const filtered = useMemo(() => applyDrill(list, drill).filter((l) => (
+  const fields = useMemo(() => leadFields(
+    [...new Set([...STATUSES, ...list.map((l) => l.status).filter(Boolean)])],
+    [...new Set([...sources.map((s) => s.label), ...list.map((l) => l.source).filter(Boolean)])],
+  ), [list, sources]);
+
+  const filtered = useMemo(() => applyFilters(applyDrill(list, drill).filter((l) => (
     (!sourceFilter || l.source === sourceFilter) &&
     (!ownerFilter || l.assigned_counselor === ownerFilter)
-  )), [list, sourceFilter, ownerFilter, drill.idSet, drill.active]);
+  )), conditions, match, fields, leadValue, me), [list, sourceFilter, ownerFilter, drill.idSet, drill.active, conditions, match, fields, me]);
+
+  useEffect(() => {
+    const visible = new Set(filtered.map((r) => r.id));
+    const stale = [...selection.ids].filter((id) => !visible.has(id));
+    if (stale.length) selection.setMany(stale, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtered]);
+
+  const selectedIds = [...selection.ids];
+  const allSelected = filtered.length > 0 && filtered.every((l) => selection.has(l.id));
+  const someSelected = filtered.some((l) => selection.has(l.id));
+  const runUpdate = async (field, value, onProgress) => {
+    const result = await runBulk(selectedIds, (id) => api.updateLead(id, { [field.api_name]: value }), onProgress);
+    load();
+    return result;
+  };
+  const runDelete = async (onProgress) => {
+    const result = await runBulk(selectedIds, (id) => api.deleteLead(id), onProgress, 2);
+    selection.clear();
+    load();
+    return result;
+  };
+  const reassign = (l) => async (value) => {
+    await api.updateLead(l.id, { assigned_counselor: value || null });
+    setList((ls) => ls.map((x) => (x.id === l.id ? { ...x, assigned_counselor: value } : x)));
+  };
 
   const kpis = useMemo(() => {
     const by = (s) => list.filter((l) => l.status === s).length;
@@ -506,7 +580,7 @@ export default function Leads() {
       <div className="flex flex-wrap items-center gap-2 mt-5 mb-4">
         <div className="relative flex-1 min-w-[240px]">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[var(--color-faint)]" />
-          <input value={q} onChange={(e) => setQ(e.target.value)} className="input w-full pl-9"
+          <input value={q} onChange={(e) => setQ(e.target.value)} style={{ paddingLeft: 36 }} className="input w-full pl-9"
             placeholder="Search by name, email or phone…" aria-label="Search leads" />
         </div>
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}
@@ -526,12 +600,33 @@ export default function Leads() {
             {owners.map((o) => <option key={o}>{o}</option>)}
           </select>
         )}
+        <FilterButton count={conditions.filter(isComplete).length} open={showFilters} onClick={() => setShowFilters((v) => !v)} />
+        <SavedFiltersMenu module="leads" refreshKey={savedRefresh} activeId={activeSaved?.id}
+          onSelect={(f) => { setActiveSaved(f); setConditions(f ? f.filters : []); setMatch(f ? f.match : 'all'); setShowFilters(false); }} />
         {(q || statusFilter || sourceFilter || ownerFilter) && (
           <button onClick={() => { setQ(''); setStatusFilter(''); setSourceFilter(''); setOwnerFilter(''); }}
             className="text-xs font-medium px-3 py-2 rounded-lg border border-line text-slate-500 hover:text-ink hover:bg-[var(--color-canvas)]">
             Clear
           </button>
         )}
+      </div>
+
+      {showFilters && (
+        <div className="mb-3">
+          <FilterPanel key={activeSaved?.id || 'adhoc'} module="leads" fields={fields} initial={conditions} initialMatch={match}
+            onClose={() => setShowFilters(false)} onSaved={() => setSavedRefresh((n) => n + 1)}
+            onApply={(conds, m, saved) => { setConditions(conds); setMatch(m); setActiveSaved(saved || null); setShowFilters(false); }} />
+        </div>
+      )}
+      <div className="mb-3">
+        <ActiveFilterChips conditions={conditions} match={match} fields={fields} savedName={activeSaved?.name}
+          onRemove={(c) => { setConditions((cs) => cs.filter((x) => x !== c)); setActiveSaved(null); }}
+          onClear={() => { setConditions([]); setActiveSaved(null); }} />
+        <BulkBar count={selection.ids.size} pageCount={filtered.length} matchingCount={filtered.length} allPageSelected={allSelected}
+          onSelectAllMatching={() => selection.replace(filtered.map((l) => l.id))} onClear={selection.clear}
+          canEdit={can('leads', 'edit')} canDelete={can('leads', 'delete')} canExport={can('leads', 'export')} hasUserField
+          onUpdate={() => setBulk('update')} onAssign={() => setBulk('assign')} onDelete={() => setBulk('delete')}
+          onExport={() => downloadCSV('leads-selected.csv', filtered.filter((l) => selection.has(l.id)))} />
       </div>
 
       <DrillBanner drill={drill} shown={drill.data ? filtered.length : undefined} noun="leads" />
@@ -569,6 +664,10 @@ export default function Leads() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left bg-[var(--color-canvas)] border-b border-line">
+                  <th className="py-2.5 pl-4 pr-1 w-8">
+                    <RowCheckbox checked={allSelected} indeterminate={!allSelected && someSelected} label="Select all leads shown"
+                      onChange={() => selection.setMany(filtered.map((l) => l.id), !allSelected)} />
+                  </th>
                   {['Lead', 'Contact', 'Source', 'Status', 'Rating', 'Assigned To', 'Next Follow-up', 'Created'].map((h) => (
                     <th key={h} className="py-2.5 px-4 t-meta font-semibold whitespace-nowrap">{h}</th>
                   ))}
@@ -577,7 +676,11 @@ export default function Leads() {
               </thead>
               <tbody>
                 {filtered.map((l) => (
-                  <tr key={l.id} className="border-b border-line/60 hover:bg-[var(--color-canvas)] transition-colors">
+                  <tr key={l.id} className="border-b border-line/60 hover:bg-[var(--color-canvas)] transition-colors"
+                    style={selection.has(l.id) ? { background: 'var(--color-brand-faint)' } : undefined}>
+                    <td className="py-3 pl-4 pr-1 w-8">
+                      <RowCheckbox checked={selection.has(l.id)} label={`Select ${l.student_name}`} onChange={() => selection.toggle(l.id)} />
+                    </td>
                     <td className="py-3 px-4">
                       <Link to={`/leads/${l.id}`} className="flex items-center gap-2.5 group">
                         <Avatar name={l.student_name} size="sm" />
@@ -596,7 +699,10 @@ export default function Leads() {
                     <td className="py-3 px-4 text-[var(--color-muted)] whitespace-nowrap">{l.source || '—'}</td>
                     <td className="py-3 px-4"><Badge status={l.status}>{l.status}</Badge></td>
                     <td className="py-3 px-4">{l.lead_rating ? <Badge status={l.lead_rating}>{l.lead_rating}</Badge> : <span className="text-[var(--color-faint)]">—</span>}</td>
-                    <td className="py-3 px-4 text-[var(--color-muted)] whitespace-nowrap">{l.assigned_counselor || '—'}</td>
+                    <td className="py-3 px-4 whitespace-nowrap">
+                      <AssignPicker mode="name" label="Owner" value={l.assigned_counselor || null}
+                        disabled={!can('leads', 'edit')} onChange={reassign(l)} />
+                    </td>
                     <td className="py-3 px-4 whitespace-nowrap">
                       {l.follow_up_date ? (
                         <span className="inline-flex items-center gap-1 text-xs text-[var(--color-muted)]">
@@ -626,6 +732,15 @@ export default function Leads() {
           </div>
         </div>
       )}
+
+      {bulk === 'update' && (
+        <BulkUpdateModal fields={fields} count={selection.ids.size} noun="lead" onRun={runUpdate} onClose={() => setBulk(null)} />
+      )}
+      {bulk === 'assign' && (
+        <BulkAssignModal userFields={fields.filter((f) => f.field_type === 'user_name')} count={selection.ids.size} noun="lead"
+          onRun={runUpdate} onClose={() => setBulk(null)} />
+      )}
+      {bulk === 'delete' && <BulkDeleteModal count={selection.ids.size} noun="lead" onRun={runDelete} onClose={() => setBulk(null)} />}
 
       {editingId && (
         <LeadEditModal leadId={editingId}

@@ -12,6 +12,7 @@ import DisposeLeadModal from '../components/DisposeLeadModal';
 import WhatsAppTemplateModal from '../components/WhatsAppTemplateModal';
 import AddRelatedModal from './universal/AddRelatedModal';
 import ScheduleMeetingModal from '../components/ScheduleMeetingModal';
+import AssignPicker from '../components/AssignPicker';
 import LeadEditModal from '../components/LeadEditModal';
 import { formatFieldValue } from './universal/fieldUtils';
 import { accentFor } from '../theme/moduleAccents';
@@ -538,7 +539,13 @@ export default function LeadDetail() {
                 Created on <span className="text-ink font-medium">{lead.created_at?.slice(0, 10)}</span>
               </div>
               <div className="flex items-center justify-end gap-1.5 mt-1">
-                Owner <span className="text-ink font-medium">{lead.assigned_counselor || 'Unassigned'}</span>
+                Owner
+                <AssignPicker mode="name" label="Owner" align="right" value={lead.assigned_counselor || null}
+                  disabled={!can('leads', 'edit')}
+                  onChange={async (v) => {
+                    await api.updateLead(lead.id, { assigned_counselor: v || null });
+                    setLead((l) => ({ ...l, assigned_counselor: v }));
+                  }} />
               </div>
             </div>
           </div>
