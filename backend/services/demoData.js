@@ -125,7 +125,7 @@ const RATINGS = ['Hot', 'Warm', 'Cold'];
 const LEAD_STATUSES = ['New', 'Contacted', 'Qualified', 'Demo Done', 'Proposal Sent', 'Negotiation', 'Lost'];
 const MODES = ['UPI', 'Bank Transfer', 'Cheque', 'Cash', 'Card'];
 const TICKET_CATEGORIES = ['Billing', 'Technical', 'Onboarding', 'Feature Request', 'Data Import', 'Training'];
-const PRIORITIES = ['Low', 'Medium', 'High', 'Urgent'];
+const PRIORITIES = ['Low', 'Medium', 'High', 'Critical'];
 const LOSS_REASONS = ['Price too high', 'Chose competitor', 'No budget', 'No decision taken', 'Bad timing', 'Lost to in-house build'];
 
 // State code drives CGST+SGST versus IGST. A demo that only ever shows one of
@@ -217,7 +217,14 @@ const WIPE_STATEMENTS = [
   ['subscriptions (unlink)', "UPDATE subscriptions SET renewed_by_id=NULL, parent_subscription_id=NULL WHERE notes LIKE ?"],
   ['subscriptions', "DELETE FROM subscriptions WHERE notes LIKE ?"],
   ['ticket_replies', "DELETE FROM ticket_replies WHERE ticket_id IN (SELECT id FROM tickets WHERE description LIKE ?)"],
+  ['incident_updates', "DELETE FROM incident_updates WHERE incident_id IN (SELECT id FROM major_incidents WHERE impact LIKE ?)"],
+  ['major_incidents', "DELETE FROM major_incidents WHERE impact LIKE ?"],
+  ['problems', "DELETE FROM problems WHERE root_cause LIKE ?"],
+  ['kb_articles', "DELETE FROM kb_articles WHERE body LIKE ?"],
+  ['service_catalog', "DELETE FROM service_catalog_items WHERE description LIKE ?"],
+  ['assets', "DELETE FROM assets WHERE notes LIKE ?"],
   ['tickets', "DELETE FROM tickets WHERE description LIKE ?"],
+  ['teams', "DELETE FROM teams WHERE description LIKE ?"],
   ['lead_activities', "DELETE FROM lead_activities WHERE note LIKE ?"],
   ['calls', "DELETE FROM calls WHERE notes LIKE ?"],
   ['meetings', "DELETE FROM meetings WHERE agenda LIKE ?"],
@@ -884,6 +891,101 @@ function seed() {
     }
   }
 
+  // --- support desk ----------------------------------------------------------
+  // Teams to route to, configured categories, CSAT on resolved tickets, and
+  // the support records (knowledge base, catalog, incident, problem, assets)
+  // so the Support Command Center has something real to show.
+  {
+    const teamIds = [];
+    const insTeam = db.prepare('INSERT INTO teams (name, description, lead_user_id, active) VALUES (?,?,?,1)');
+    const insMember = db.prepare('INSERT OR IGNORE INTO team_members (team_id, user_id) VALUES (?,?)');
+    [['L1 Support', 'Technical'], ['Technical Support', 'Installation'], ['Billing Support', 'Billing']].forEach(([name], i) => {
+      const existing = db.prepare('SELECT id FROM teams WHERE name=?').get(name);
+      const id = existing ? existing.id : insTeam.run(name, `${TAG} demo support team`, userIds[i % userIds.length], ).lastInsertRowid;
+      userIds.forEach((u, j) => { if (j % 3 === i || j === i) insMember.run(id, u); });
+      teamIds.push(id);
+      if (!existing) add('teams');
+    });
+    const CATS = [['Technical', 'Error / Bug', 0], ['Technical', 'Performance', 0], ['Billing', 'Invoice', 2], ['Product', 'How-to', 0],
+      ['Installation', 'New Setup', 1], ['Account', 'Users & Licences', 0], ['Other', null, 0]];
+    const demoTickets = db.prepare('SELECT id, status, created_at, resolved_at FROM tickets WHERE description LIKE ?').all(`%${TAG}%`);
+    const upd = db.prepare(`UPDATE tickets SET category=?, subcategory=?, team_id=?, ticket_type='Incident',
+      csat_rating=?, csat_comment=?, csat_at=?, status=CASE WHEN status='Open' AND ?=1 THEN 'Assigned' ELSE status END WHERE id=?`);
+    demoTickets.forEach((t, i) => {
+      const [cat, sub, team] = CATS[i % CATS.length];
+      const done = ['Resolved', 'Closed'].includes(t.status);
+      const rated = done && chance(0.65);
+      upd.run(cat, sub, teamIds[team], rated ? pick([5, 5, 4, 4, 4, 3, 2]) : null,
+        rated ? pick(['Quick and helpful.', 'Solved on the first call.', 'Took a while but resolved.', null]) : null,
+        rated ? (t.resolved_at || t.created_at) : null, i % 4 === 0 ? 1 : 0, t.id);
+    });
+
+    const insKb = db.prepare(`INSERT INTO kb_articles (article_number, title, article_type, category, status, summary, body, tags, views, owner_id)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`);
+    [
+      ['How to reset a user password', 'FAQ', 'Account', 'Reset a locked or forgotten password from Settings → Users.', 'password, login, reset'],
+      ['Fixing "session expired" on login', 'Troubleshooting', 'Technical', 'Clear the browser cache and check the device clock.', 'login, session, error'],
+      ['Importing students from Excel', 'Article', 'Product', 'Use the import template and map each column before importing.', 'import, excel, data'],
+      ['Setting up the biometric device', 'Product Documentation', 'Installation', 'Connect the device to the same network and pair it from Devices.', 'biometric, device, setup'],
+      ['Why does my invoice total differ from the quote?', 'FAQ', 'Billing', 'Taxes and discounts are recalculated at invoicing time.', 'invoice, quotation, tax, billing'],
+      ['Adding user licences', 'Article', 'Account', 'Additional licences are added from Billing → Licences.', 'licence, users, billing'],
+      ['Speeding up slow reports', 'Troubleshooting', 'Technical', 'Narrow the date range and archive old records.', 'performance, reports, slow'],
+      ['WhatsApp messages stuck in queue', 'Troubleshooting', 'Technical', 'Check the provider template approval and the number’s quality rating.', 'whatsapp, queue, messages'],
+    ].forEach(([title, type, cat, summary, tags], i) => {
+      insKb.run(`KB-D${String(100 + i)}`, title, type, cat, 'Published', summary,
+        `${TAG} ${summary}\n\nSteps:\n1. Open the relevant screen.\n2. Follow the on-screen instructions.\n3. Contact support if the issue continues.`, tags, int(5, 240), pick(userIds));
+      add('kb_articles');
+    });
+
+    const insItem = db.prepare(`INSERT INTO service_catalog_items (name, category, description, form_schema, approval_required, approver_id, default_team_id, default_priority, active)
+      VALUES (?,?,?,?,?,?,?,?,1)`);
+    [
+      ['New user access', 'Account', 'Create a login for a new staff member.', [
+        { key: 'full_name', label: 'Full name', type: 'text', required: true },
+        { key: 'email', label: 'Work email', type: 'text', required: true },
+        { key: 'role', label: 'Role', type: 'dropdown', required: true, options: ['Staff', 'Manager', 'Admin'] },
+        { key: 'reason', label: 'Why is Admin access needed?', type: 'textarea', required: true, show_if: { key: 'role', equals: 'Admin' } },
+      ], 1, 0, 'Medium'],
+      ['On-site installation visit', 'Installation', 'Book an engineer visit.', [
+        { key: 'site_address', label: 'Site address', type: 'textarea', required: true },
+        { key: 'preferred_date', label: 'Preferred date', type: 'date', required: true },
+        { key: 'devices', label: 'Number of devices', type: 'number', required: false },
+      ], 1, 1, 'High'],
+      ['Data export request', 'Product', 'Export your data as Excel.', [
+        { key: 'modules', label: 'What should be exported?', type: 'text', required: true },
+        { key: 'from_date', label: 'From date', type: 'date', required: false },
+      ], 0, 0, 'Low'],
+      ['Invoice correction', 'Billing', 'Request a corrected invoice.', [
+        { key: 'invoice_number', label: 'Invoice number', type: 'text', required: true },
+        { key: 'correction', label: 'What needs correcting?', type: 'textarea', required: true },
+      ], 0, 2, 'Medium'],
+    ].forEach(([name, cat, desc, schema, approval, team, prio]) => {
+      insItem.run(name, cat, `${desc} ${TAG}`, JSON.stringify(schema), approval, approval ? userIds[0] : null, teamIds[team], prio);
+      add('service_catalog');
+    });
+
+    const openIds = demoTickets.filter((t) => !['Resolved', 'Closed'].includes(t.status)).map((t) => t.id);
+    const inc = db.prepare(`INSERT INTO major_incidents (incident_number, title, status, severity, commander_id, started_at, impact, affected_customers)
+      VALUES (?,?,?,?,?,?,?,?)`).run('INC-D001', 'WhatsApp message delivery delayed', 'Monitoring', 'SEV2', userIds[0], stamp(2),
+      `${TAG} Outbound WhatsApp messages delayed by up to 40 minutes.`, 'Customers using WhatsApp notifications').lastInsertRowid;
+    db.prepare('INSERT INTO incident_updates (incident_id, status, body, user_id, created_at) VALUES (?,?,?,?,?)').run(inc, 'Identified', 'Provider-side throttling identified; failover route enabled.', userIds[0], stamp(1));
+    openIds.slice(0, 3).forEach((id) => db.prepare('UPDATE tickets SET major_incident_id=? WHERE id=?').run(inc, id));
+    add('major_incidents');
+    const prb = db.prepare(`INSERT INTO problems (problem_number, title, status, priority, category, owner_id, root_cause, workaround)
+      VALUES (?,?,?,?,?,?,?,?)`).run('PRB-D001', 'Import fails on files with merged cells', 'Known Error', 'High', 'Product', pick(userIds),
+      `${TAG} The parser stops at the first merged cell.`, 'Unmerge cells before importing.').lastInsertRowid;
+    openIds.slice(3, 5).forEach((id) => db.prepare('UPDATE tickets SET problem_id=? WHERE id=?').run(prb, id));
+    add('problems');
+
+    const subsForAssets = db.prepare('SELECT id, account_id, product_id FROM subscriptions WHERE notes LIKE ? LIMIT 12').all(`%${TAG}%`);
+    subsForAssets.forEach((sub, i) => {
+      db.prepare(`INSERT INTO assets (asset_tag, asset_name, serial_number, account_id, product_id, subscription_id, status, install_date, warranty_end, notes)
+        VALUES (?,?,?,?,?,?,?,?,?,?)`).run(`AST-D${String(500 + i)}`, pick(['Biometric Terminal', 'ID Card Printer', 'On-prem Server', 'Barcode Scanner']),
+        `SN${880000 + i * 37}`, sub.account_id, sub.product_id, sub.id, i % 7 === 0 ? 'In Repair' : 'Active', day(int(60, 400)), day(-int(30, 500)), `${TAG} demo asset`);
+      add('assets');
+    });
+  }
+
   // --- activities ----------------------------------------------------------
   // Every one of these is attached to something. The universal Activities tab
   // reads related_module + related_record_id, so an activity with a null
@@ -1075,6 +1177,9 @@ function seed() {
   // until the next sweep and the overdue reports would disagree with the list.
   try { documentService.markOverdue(); } catch { /* sweep is best-effort */ }
 
+  // Support desk: give the demo tickets their SLA policies and bring SLA
+  // states and escalations up to date (silently — no notification burst).
+  try { require('./supportEngine').backfillPolicies(); } catch (e) { console.warn('[demo] support backfill skipped:', e.message); }
   return counts;
 }
 

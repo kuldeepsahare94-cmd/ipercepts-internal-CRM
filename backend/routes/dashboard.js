@@ -272,7 +272,7 @@ router.get('/crm', requireAuth, (req, res) => {
   let support = null;
   if (can('tickets')) {
     const open = metric('tickets_open');
-    const by = ['Urgent', 'High', 'Medium', 'Low'].map((p) => ({ priority: p, ...metric('tickets_open_priority', { priority: p }) }));
+    const by = ['Critical', 'High', 'Medium', 'Low'].map((p) => ({ priority: p, ...metric('tickets_open_priority', { priority: p }) }));
     const unset = metric('tickets_open_priority', { priority: 'Unset' });
     if (unset.count) by.push({ priority: 'Unset', ...unset });
     support = { open, by_priority: by };
@@ -434,7 +434,7 @@ router.get('/drill', requireAuth, (req, res) => {
   const params = {};
   for (const k of ['owner', 'team', ...(def.params || [])]) if (req.query[k]) params[k] = String(req.query[k]);
   try {
-    const ctx = M.context(params);
+    const ctx = M.context(params, req.user);
     const r = M.evaluate(key, params, ctx);
     res.json({ ...M.describe(key, params, ctx), params, ids: r.ids, count: r.count, sum: r.sum });
   } catch (e) {

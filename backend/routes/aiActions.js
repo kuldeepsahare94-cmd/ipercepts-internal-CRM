@@ -88,7 +88,7 @@ router.post('/tickets/:id/analyze', requirePermission('tickets', 'view'), async 
 
   try {
     const result = await generateJson(
-      'You are a support triage assistant inside a CRM. Given a ticket\'s data, respond with ONLY a JSON object: {"summary": "1-2 sentence summary", "suggested_priority": "Low"|"Medium"|"High"|"Urgent", "suggested_category": "short category label", "suggested_response": "a draft customer-facing reply, professional and concise"}. No markdown, no commentary outside the JSON.',
+      'You are a support triage assistant inside a CRM. Given a ticket\'s data, respond with ONLY a JSON object: {"summary": "1-2 sentence summary", "suggested_priority": "Low"|"Medium"|"High"|"Critical", "suggested_category": "short category label", "suggested_response": "a draft customer-facing reply, professional and concise"}. No markdown, no commentary outside the JSON.',
       context
     );
     if (req.body.save_as_note) saveAsNote('tickets', ticket.id, 'AI ticket analysis', `${result.summary}\n\nSuggested priority: ${result.suggested_priority}\nSuggested category: ${result.suggested_category}`, req.user.id);

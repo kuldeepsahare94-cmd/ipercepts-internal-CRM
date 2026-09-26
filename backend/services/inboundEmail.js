@@ -140,6 +140,8 @@ function storeInboundMessage(accountId, parsed, uid) {
 
   const emailId = info.lastInsertRowid;
   saveAttachments(emailId, parsed.attachments);
+  // Support desk: email-to-ticket (off unless enabled in Support Settings).
+  try { require('./supportChannels').fromEmail(db.prepare('SELECT * FROM emails WHERE id=?').get(emailId)); } catch (e) { console.warn('[support] email-to-ticket failed:', e.message); }
   return { skipped: false, id: emailId, matched: !!match, matched_by: match?.matched_by || null };
 }
 

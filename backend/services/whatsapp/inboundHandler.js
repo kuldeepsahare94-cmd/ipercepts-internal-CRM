@@ -62,6 +62,8 @@ function handleInboundMessage(providerId, from, text, providerMessageId) {
   db.prepare(`
     UPDATE whatsapp_conversations SET last_message_at=datetime('now'), last_message_preview=?, unread_count=unread_count+1 WHERE id=?
   `).run((text || '').slice(0, 120), convo.id);
+  // Support desk: WhatsApp-to-ticket (off unless enabled in Support Settings).
+  try { require('../supportChannels').fromWhatsApp(convo, text); } catch (e) { console.warn('[support] whatsapp-to-ticket failed:', e.message); }
   return convo;
 }
 

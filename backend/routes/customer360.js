@@ -28,7 +28,7 @@ function nextBestActions({ accountId, tickets, tasks, quotations, invoices = [],
   const today = new Date().toISOString().slice(0, 10);
   const out = [];
 
-  const urgent = tickets.find((t) => !['Resolved', 'Closed'].includes(t.status) && ['High', 'Urgent'].includes(t.priority));
+  const urgent = tickets.find((t) => !['Resolved', 'Closed'].includes(t.status) && ['High', 'Urgent', 'Critical'].includes(t.priority));
   if (urgent) out.push({ priority: 1, action: `Resolve ticket ${urgent.ticket_number}`, reason: `${urgent.priority} priority, still open`, link: `/records/tickets/${urgent.id}` });
 
   const overdue = tasks.filter((t) => t.due_date && t.due_date.slice(0, 10) < today)
@@ -196,7 +196,7 @@ router.get('/accounts/:id', requirePermission('accounts', 'view'), (req, res) =>
   // with what's actually wrong rather than a generic banner.
   const today = new Date().toISOString().slice(0, 10);
   const attention = [];
-  const urgentTickets = tickets.filter((t) => !['Resolved', 'Closed'].includes(t.status) && ['High', 'Urgent'].includes(t.priority));
+  const urgentTickets = tickets.filter((t) => !['Resolved', 'Closed'].includes(t.status) && ['High', 'Urgent', 'Critical'].includes(t.priority));
   if (urgentTickets.length) attention.push({ severity: 'high', text: `${urgentTickets.length} high-priority ticket(s) open` });
   const overdueTasks = tasks.filter((t) => t.due_date && t.due_date.slice(0, 10) < today);
   if (overdueTasks.length) attention.push({ severity: 'high', text: `${overdueTasks.length} overdue task(s)` });

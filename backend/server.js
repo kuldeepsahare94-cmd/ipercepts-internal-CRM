@@ -34,6 +34,7 @@ require('./db-phase42-security-access');
 require('./db-phase43-permission-completeness');
 require('./db-phase44-subscriptions-amc');
 require('./db-phase45-list-tools');
+require('./db-phase46-support-desk');
 
 const app = express();
 
@@ -167,6 +168,15 @@ app.use('/api/track', require('./routes/tracking'));
 app.use('/api/email-campaigns', requireAuth, require('./routes/emailCampaigns'));
 app.use('/api/ai-actions', requireAuth, require('./routes/aiActions'));
 app.use('/api/saved-filters', requireAuth, require('./routes/savedFilters'));
+// Support Desk: Command Center, SLA engine, settings, and the support-record
+// modules (registered in db-phase46) served by a shared table router.
+app.use('/api/support', requireAuth, require('./routes/support'));
+const tableRecords = require('./routes/tableRecords');
+app.use('/api/kb_articles', requireAuth, tableRecords({ table: 'kb_articles', permission: 'kb_articles', searchColumns: ['title', 'summary', 'tags', 'article_number'], numberColumn: 'article_number', numberPrefix: 'KB-' }));
+app.use('/api/major_incidents', requireAuth, tableRecords({ table: 'major_incidents', permission: 'major_incidents', searchColumns: ['title', 'incident_number'], numberColumn: 'incident_number', numberPrefix: 'INC-' }));
+app.use('/api/problems', requireAuth, tableRecords({ table: 'problems', permission: 'problems', searchColumns: ['title', 'problem_number', 'category'], numberColumn: 'problem_number', numberPrefix: 'PRB-' }));
+app.use('/api/service_catalog', requireAuth, tableRecords({ table: 'service_catalog_items', permission: 'service_catalog', searchColumns: ['name', 'category'], orderBy: 'category, name' }));
+app.use('/api/assets', requireAuth, tableRecords({ table: 'assets', permission: 'assets', searchColumns: ['asset_name', 'asset_tag', 'serial_number'], numberColumn: 'asset_tag', numberPrefix: 'AST-' }));
 
 // ---------------------------------------------------------------------------
 // Per-customer extensions — features built for ONE customer.
@@ -211,4 +221,19 @@ app.listen(PORT, () => {
   };
   sweepOverdue();
   setInterval(sweepOverdue, 60 * 60 * 1000).unref();
+
+  // Support Desk: give pre-existing tickets an SLA policy once, then keep
+  // SLA states, warnings, breaches and escalations current every minute.
+  try {
+    const supportEngine = require('./services/supportEngine');
+    const n = supportEngine.backfillPolicies();
+    if (n) console.log(`[support] applied SLA policies to ${n} existing ticket(s)`);
+    const sweepSupport = () => {
+      try { supportEngine.sweepAll(); } catch (e) { console.warn('[support] SLA sweep failed:', e.message); }
+    };
+    sweepSupport();
+    setInterval(sweepSupport, 60 * 1000).unref();
+  } catch (e) {
+    console.warn('[support] engine not started:', e.message);
+  }
 });

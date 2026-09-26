@@ -172,7 +172,7 @@ const CLOSE_DATE = `COALESCE((SELECT MAX(h.changed_at) FROM opportunity_stage_hi
 const STALLED_DAYS = 7;
 const QUOTE_WINDOW_DAYS = 7;
 const RENEWAL_WINDOW_DAYS = 30;
-const PRIORITIES = ['Urgent', 'High', 'Medium', 'Low'];
+const PRIORITIES = ['Critical', 'High', 'Medium', 'Low'];
 
 function q(sql, args = []) { return { sql, args }; }
 function withScope(base, kind, alias, scope, tail = '') {
@@ -306,8 +306,8 @@ const METRICS = {
   },
   tickets_high_priority: {
     module: 'tickets', path: '/records/tickets', title: 'High-priority open tickets',
-    filters: () => [['Status', 'Open (not Resolved or Closed)'], ['Priority', 'Urgent and High']],
-    query: (p, c) => withScope(q(`SELECT tk.id FROM tickets tk WHERE ${TICKET_OPEN} AND tk.priority IN ('Urgent','High')`), 'ticket', 'tk', c.scope),
+    filters: () => [['Status', 'Open (not Resolved or Closed)'], ['Priority', 'Critical and High']],
+    query: (p, c) => withScope(q(`SELECT tk.id FROM tickets tk WHERE ${TICKET_OPEN} AND tk.priority IN ('Critical','Urgent','High')`), 'ticket', 'tk', c.scope),
   },
   tickets_open_priority: {
     module: 'tickets', path: '/records/tickets', title: 'Open tickets by priority',
@@ -315,8 +315,10 @@ const METRICS = {
     filters: (p) => [['Status', 'Open (not Resolved or Closed)'], ['Priority', p.priority === 'Unset' ? 'Not set' : p.priority]],
     query: (p, c) => withScope(
       p.priority === 'Unset'
-        ? q(`SELECT tk.id FROM tickets tk WHERE ${TICKET_OPEN} AND COALESCE(tk.priority,'') NOT IN ('Urgent','High','Medium','Low')`)
-        : q(`SELECT tk.id FROM tickets tk WHERE ${TICKET_OPEN} AND tk.priority = ?`, [p.priority]),
+        ? q(`SELECT tk.id FROM tickets tk WHERE ${TICKET_OPEN} AND COALESCE(tk.priority,'') NOT IN ('Critical','Urgent','High','Medium','Low')`)
+        : p.priority === 'Critical'
+          ? q(`SELECT tk.id FROM tickets tk WHERE ${TICKET_OPEN} AND tk.priority IN ('Critical','Urgent')`)
+          : q(`SELECT tk.id FROM tickets tk WHERE ${TICKET_OPEN} AND tk.priority = ?`, [p.priority]),
       'ticket', 'tk', c.scope),
   },
 
@@ -439,19 +441,19 @@ function closedMetric(kind) {
 // ---------------------------------------------------------------------------
 // Evaluation
 // ---------------------------------------------------------------------------
-function context(params = {}) {
-  return { today: crmToday(), scope: resolveScope(params) };
+function context(params = {}, user = null) {
+  return { today: crmToday(), scope: resolveScope(params), user };
 }
 
 function evaluate(key, params = {}, ctx = context(params)) {
   const m = METRICS[key];
   if (!m) throw Object.assign(new Error(`Unknown metric "${key}"`), { status: 400 });
-  for (const name of m.params || []) {
+  for (const name of m.optionalParams ? [] : (m.params || [])) {
     if (name === 'rep' || name === 'period') continue;
     if (params[name] === undefined || params[name] === '') throw Object.assign(new Error(`"${name}" is required for ${key}`), { status: 400 });
   }
-  if (m.params?.includes('month') && !/^\d{4}-\d{2}$/.test(params.month)) throw Object.assign(new Error('month must be YYYY-MM'), { status: 400 });
-  if (m.params?.includes('from') && !(/^\d{4}-\d{2}-\d{2}$/.test(params.from) && /^\d{4}-\d{2}-\d{2}$/.test(params.to))) {
+  if (!m.optionalParams && m.params?.includes('month') && !/^\d{4}-\d{2}$/.test(params.month)) throw Object.assign(new Error('month must be YYYY-MM'), { status: 400 });
+  if (!m.optionalParams && m.params?.includes('from') && !(/^\d{4}-\d{2}-\d{2}$/.test(params.from) && /^\d{4}-\d{2}-\d{2}$/.test(params.to))) {
     throw Object.assign(new Error('from/to must be YYYY-MM-DD'), { status: 400 });
   }
   if (params.period && !PERIODS[params.period]) throw Object.assign(new Error('Unknown period'), { status: 400 });
@@ -465,13 +467,17 @@ function evaluate(key, params = {}, ctx = context(params)) {
 function describe(key, params = {}, ctx = context(params)) {
   const m = METRICS[key];
   const filters = m.filters(params, ctx).map(([label, value]) => ({ label, value }));
-  if (ctx.scope) filters.push({ label: ctx.scope.label[0], value: ctx.scope.label[1] });
-  return { metric: key, module: m.module, path: m.path, title: m.title, amount_label: m.amount || null, filters, today: ctx.today, timezone: CRM_TIMEZONE };
+  if (ctx.scope && !m.optionalParams) filters.push({ label: ctx.scope.label[0], value: ctx.scope.label[1] });
+  return { metric: key, module: m.module, path: m.path, title: typeof m.title === 'function' ? m.title(params, ctx) : m.title, amount_label: m.amount || null, filters, today: ctx.today, timezone: CRM_TIMEZONE };
 }
 
 function canView(user, module) {
   return !!(user && user.permissions && user.permissions[module] && user.permissions[module].view);
 }
+
+// Support desk ticket filters share this registry, so their drill-downs use
+// the same endpoint, banner and list filtering as every dashboard figure.
+Object.assign(METRICS, require('./supportMetrics').METRICS);
 
 module.exports = {
   METRICS, PERIODS, CRM_TIMEZONE, RENEWAL_WINDOW_DAYS, STALLED_DAYS, QUOTE_WINDOW_DAYS, PRIORITIES,

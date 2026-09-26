@@ -698,7 +698,7 @@ register({
   description: 'Create a new support Ticket.',
   input_schema: {
     type: 'object', required: ['subject'],
-    properties: { subject: { type: 'string' }, account_id: { type: 'integer' }, contact_id: { type: 'integer' }, priority: { type: 'string', description: 'Low, Medium, High, or Urgent' }, description: { type: 'string' } },
+    properties: { subject: { type: 'string' }, account_id: { type: 'integer' }, contact_id: { type: 'integer' }, priority: { type: 'string', description: 'Low, Medium, High, or Critical' }, description: { type: 'string' } },
   },
   handler: (user, i) => {
     requirePerm(user, 'tickets', 'create');

@@ -20,7 +20,7 @@ const db = require('../db');
 const SKIP = new Set([
   'auth', 'modules', 'dev', 'settings', 'admin', 'search', 'dashboard',
   'calls', 'email-settings', 'email-campaigns', 'wa-quick-templates',
-  'whatsapp', 'inbox', 'c360', 'reports', 'workflows', 'ai', 'import',
+  'whatsapp', 'inbox', 'c360', 'reports', 'workflows', 'ai', 'import', 'support', 'saved-filters',
 ]);
 
 // Field types where an empty string is a legitimate value, or where the

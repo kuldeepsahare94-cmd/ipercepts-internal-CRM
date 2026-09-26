@@ -180,7 +180,7 @@ function scoreAccount(accountId) {
     FROM subscriptions WHERE account_id=?`);
   const tickets = q(`SELECT COUNT(*) total,
       COALESCE(SUM(CASE WHEN status NOT IN ('Resolved','Closed') THEN 1 ELSE 0 END),0) open_tickets,
-      COALESCE(SUM(CASE WHEN priority IN ('High','Urgent') AND status NOT IN ('Resolved','Closed') THEN 1 ELSE 0 END),0) urgent
+      COALESCE(SUM(CASE WHEN priority IN ('High','Urgent','Critical') AND status NOT IN ('Resolved','Closed') THEN 1 ELSE 0 END),0) urgent
     FROM tickets WHERE account_id=?`);
   const lastActivity = q(`SELECT MAX(d) last FROM (
       SELECT MAX(COALESCE(disposed_at, created_at)) d FROM calls WHERE related_module='accounts' AND related_record_id=?

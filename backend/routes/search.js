@@ -82,6 +82,12 @@ const LOOKUP_DISPLAY = {
   opportunities: { columns: ['opportunity_name', 'amount'], label: (r) => r.opportunity_name, sub: (r) => (r.amount ? `₹${Number(r.amount).toLocaleString('en-IN')}` : '') },
   products: { columns: ['product_name', 'sku', 'selling_price'], label: (r) => r.product_name, sub: (r) => r.sku || '' },
   leads: { columns: ['student_name', 'mobile'], label: (r) => r.student_name, sub: (r) => r.mobile || '' },
+  subscriptions: { columns: ['subscription_number', 'plan', 'status'], label: (r) => r.subscription_number, sub: (r) => [r.plan, r.status].filter(Boolean).join(' · ') },
+  tickets: { columns: ['ticket_number', 'subject'], label: (r) => `${r.ticket_number} · ${r.subject}`, sub: () => '' },
+  major_incidents: { columns: ['incident_number', 'title', 'status'], label: (r) => `${r.incident_number || ''} ${r.title}`.trim(), sub: (r) => r.status || '' },
+  problems: { columns: ['problem_number', 'title', 'status'], label: (r) => `${r.problem_number || ''} ${r.title}`.trim(), sub: (r) => r.status || '' },
+  assets: { columns: ['asset_name', 'asset_tag', 'serial_number'], label: (r) => r.asset_name, sub: (r) => r.asset_tag || r.serial_number || '' },
+  kb_articles: { columns: ['title', 'article_number'], label: (r) => r.title, sub: (r) => r.article_number || '' },
 };
 
 function lookupConfig(mod) {
