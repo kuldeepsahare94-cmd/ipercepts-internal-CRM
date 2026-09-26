@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useParams, useNavigate } from 'react-router-dom';
+import { Link, useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { Kanban as KanbanIcon, Search, MoreHorizontal, Eye, Pencil, LayoutGrid } from 'lucide-react';
 import { UniversalRecordEditModal } from '../../components/RecordEditModal';
 import ScheduleMeetingModal from '../../components/ScheduleMeetingModal';
@@ -154,6 +154,15 @@ export default function UniversalList() {
     });
     return out;
   }, [createFields]);
+  // ?new=1 (from the Support Command Center's "New Ticket" and similar
+  // shortcuts) opens the create form on arrival.
+  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    if (searchParams.get('new') !== '1' || !module || !fields.length) return;
+    if (can(module.api_name, 'create')) { setForm(defaultsForCreate); setShowForm(true); }
+    const next = new URLSearchParams(searchParams); next.delete('new');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, module, fields.length]); // eslint-disable-line react-hooks/exhaustive-deps
   const statusField = useMemo(() => fields.find((f) => STATUS_TYPES.has(f.api_name)), [fields]);
   const followupField = useMemo(() => findFollowupField(fields), [fields]);
 

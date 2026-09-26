@@ -4,7 +4,7 @@ import {
   CalendarDays,
   LayoutDashboard, Users as UsersIcon, Wallet, BarChart3, Settings as SettingsIcon,
   LogOut, UserCog, ShieldCheck, Palette, Menu, X, MessageCircle, Radio, ChevronRight,
-  ChevronDown, PhoneCall, Inbox, Megaphone, Plus, Sparkles,
+  ChevronDown, PhoneCall, Inbox, Megaphone, Plus, Sparkles, LifeBuoy,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../api';
@@ -25,6 +25,9 @@ import ErrorBoundary from './ErrorBoundary';
 const links = [
   { to: '/', label: 'Dashboard', end: true, icon: LayoutDashboard },
   { to: '/leads', label: 'Leads', icon: UsersIcon, accent: 'leads' },
+  // The Support Desk is its own workspace (Command Center + sub-navigation);
+  // its modules are reached from there rather than listed here one by one.
+  { to: '/support', label: 'Support Desk', icon: LifeBuoy, accent: 'tickets', support: true },
   { to: '/inbox', label: 'Inbox', icon: Inbox, accent: 'emails' },
   { to: '/calendar', label: 'Calendar', icon: CalendarDays, accent: 'meetings' },
   { to: '/email-campaigns', label: 'Campaigns', icon: Megaphone, accent: 'notes' },
@@ -47,7 +50,7 @@ function useUniversalModules() {
   useEffect(() => {
     api.listModulesMeta().then((mods) => {
       const HANDLED = new Set(['leads', 'payments']);
-      const visible = mods.filter((m) => !HANDLED.has(m.api_name));
+      const visible = mods.filter((m) => !HANDLED.has(m.api_name) && m.sidebar_group !== 'Support Desk');
       const byGroup = {};
       visible.forEach((m) => {
         const g = m.sidebar_group || 'Other';
@@ -124,7 +127,7 @@ function SidebarContent({ onNavigate, showClose, onClose }) {
       </div>
 
       <nav className="flex-1 py-2 overflow-y-auto thin-scroll" aria-label="Main navigation">
-        {links.map((l) => (
+        {links.filter((l) => !l.support || user?.permissions?.support?.view).map((l) => (
           <NavLink key={l.to} to={l.to} end={l.end} onClick={onNavigate} className={navItem}>
             {({ isActive }) => (
               <><NavIcon Icon={l.icon} accentKey={l.accent || 'tasks'} active={isActive} />{l.label}</>

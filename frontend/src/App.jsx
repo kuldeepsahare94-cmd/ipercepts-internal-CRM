@@ -4,6 +4,7 @@ import { AuthProvider } from './context/AuthContext';
 import { ThemeProvider } from './context/ThemeContext';
 import ProtectedRoute from './components/ProtectedRoute';
 import Layout from './components/Layout';
+import SupportShell, { MaybeSupportShell } from './pages/support/SupportShell';
 
 // Eager: these are needed for the very first paint (or to recover from a
 // failed one), so code-splitting them would only add a round-trip.
@@ -54,6 +55,20 @@ const LeadSources = lazy(() => import('./pages/LeadSources'));
 const UniversalList = lazy(() => import('./pages/universal/UniversalList'));
 const UniversalDetail = lazy(() => import('./pages/universal/UniversalDetail'));
 const UniversalKanban = lazy(() => import('./pages/universal/UniversalKanban'));
+// Support Desk workspace
+const CommandCenter = lazy(() => import('./pages/support/CommandCenter'));
+const SupportSettings = lazy(() => import('./pages/support/SupportSettings'));
+const supportPage = (name) => lazy(() => import('./pages/support/SupportPages').then((m) => ({ default: m[name] })));
+const MyWork = supportPage('MyWork');
+const SupportInbox = supportPage('Inbox');
+const SupportQueues = supportPage('Queues');
+const SlaMonitor = supportPage('SlaMonitor');
+const SupportEscalations = supportPage('EscalationsPage');
+const ServiceRequests = supportPage('ServiceRequests');
+const SupportCustomers = supportPage('Customers');
+const KnowledgeBase = supportPage('KnowledgeBase');
+const SupportReports = supportPage('Reports');
+const SupportAnalytics = supportPage('Analytics');
 
 export default function App() {
   return (
@@ -111,9 +126,26 @@ export default function App() {
               {/* Universal CRM modules (Accounts, Contacts, Opportunities, Quotations,
                   Products, Subscriptions, Tickets, and any admin-created custom module)
                   all share these three routes, driven by module/field metadata. */}
-              <Route path="/records/:moduleApiName" element={<UniversalList />} />
-              <Route path="/records/:moduleApiName/kanban" element={<UniversalKanban />} />
-              <Route path="/records/:moduleApiName/:id" element={<UniversalDetail />} />
+              {/* Support-module records (tickets, incidents, problems, ...) render
+                  inside the Support Desk navigation; every other module is unchanged. */}
+              <Route path="/records/:moduleApiName" element={<MaybeSupportShell><UniversalList /></MaybeSupportShell>} />
+              <Route path="/records/:moduleApiName/kanban" element={<MaybeSupportShell><UniversalKanban /></MaybeSupportShell>} />
+              <Route path="/records/:moduleApiName/:id" element={<MaybeSupportShell><UniversalDetail /></MaybeSupportShell>} />
+              {/* Support Desk: its own Command Center and workspace. */}
+              <Route path="/support" element={<SupportShell />}>
+                <Route index element={<CommandCenter />} />
+                <Route path="my-work" element={<MyWork />} />
+                <Route path="inbox" element={<SupportInbox />} />
+                <Route path="queues" element={<SupportQueues />} />
+                <Route path="sla" element={<SlaMonitor />} />
+                <Route path="escalations" element={<SupportEscalations />} />
+                <Route path="requests" element={<ServiceRequests />} />
+                <Route path="kb" element={<KnowledgeBase />} />
+                <Route path="customers" element={<SupportCustomers />} />
+                <Route path="reports" element={<SupportReports />} />
+                <Route path="analytics" element={<SupportAnalytics />} />
+                <Route path="settings" element={<SupportSettings />} />
+              </Route>
               {/* Catch-all: without this, any unmatched path renders an
                   empty tree, which looks identical to a crashed app. */}
               <Route path="/calendar" element={<CalendarPage />} />

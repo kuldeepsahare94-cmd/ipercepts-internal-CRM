@@ -311,6 +311,46 @@ body {
   pointer-events: none;
 }
 
+/* ===== Support Desk workspace =====
+   Calmer than the main dashboard on purpose: an information-dense operations
+   screen reads best on a quiet canvas with crisp white cards, and colour is
+   reserved for meaning (on track / at risk / breached, priority). */
+.sd-canvas {
+  background:
+    radial-gradient(900px 420px at 0% -10%, rgba(99, 102, 241, 0.10), transparent 60%),
+    radial-gradient(700px 380px at 100% 0%, rgba(56, 189, 248, 0.10), transparent 60%),
+    linear-gradient(180deg, #F5F7FF 0%, #F6F8FC 100%);
+}
+.dark-mode .sd-canvas { background: var(--color-canvas); }
+.sd-card {
+  background: var(--color-surface);
+  border: 1px solid rgba(226, 231, 243, 0.95);
+  border-radius: 14px;
+  box-shadow: 0 1px 2px rgba(23, 35, 60, 0.04), 0 6px 18px -12px rgba(49, 46, 129, 0.16);
+}
+.sd-row > * { min-width: 0; }
+/* Cards in a dashboard row share the row's height, so no row has ragged gaps. */
+.sd-row > * > .sd-card { height: 100%; }
+.sd-nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; border-radius: 10px;
+  font-size: 13px; font-weight: 500; color: var(--color-muted);
+  transition: background-color .15s ease, color .15s ease;
+}
+.sd-nav-item:hover { background: rgba(255,255,255,0.8); color: var(--color-ink); }
+.sd-nav-item.is-active {
+  background: #FFFFFF; color: #3B5BFF; font-weight: 600;
+  box-shadow: 0 1px 2px rgba(23,35,60,0.06), inset 3px 0 0 #3B5BFF;
+}
+.sd-nav-item:focus-visible { outline: 2px solid var(--color-brand); outline-offset: 1px; }
+/* Universal list/detail pages carry their own negative page margin; inside
+   the Support shell they sit in a column, so it is neutralised there. */
+.sd-embed > div { margin: 0 !important; }
+.sd-table th { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--color-muted); text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--color-line); white-space: nowrap; }
+.sd-table td { font-size: 12.5px; padding: 8px 10px; border-bottom: 1px solid var(--color-line-soft); color: var(--color-ink); }
+.sd-table tr:last-child td { border-bottom: none; }
+.sd-table tbody tr:hover td { background: var(--color-brand-faint); }
+
 /* Drill-down targets. Everything on the dashboard that opens records is a
    real link or button: pointer cursor, a subtle hover, and a visible focus
    ring for keyboard users. `.dash-stretch` makes a card's main link cover

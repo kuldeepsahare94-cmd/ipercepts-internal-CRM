@@ -43,6 +43,8 @@ import { friendlyError } from './ui';
 // are. Kept identical to the detail page's grouping (it imports this) so a
 // field is never in "Contact" on the page and "Details" in the popup.
 const FIELD_GROUPS = [
+  // Checked first: "sla_state" would otherwise match Address on "state".
+  { title: 'Service Level', match: /^sla_|_due_at$|^first_response|^resolution_(time|minutes)|^csat/i },
   { title: 'Contact', match: /email|phone|mobile|website|fax/i },
   { title: 'Address', match: /address|city|state|country|postal|zip|street/i },
   { title: 'Commercial', match: /amount|value|revenue|price|total|currency|discount|tax|payment|billing/i },

@@ -17,8 +17,13 @@ import { PageHeader } from '../components/ui';
 const MODULES = ['leads', 'accounts', 'contacts', 'opportunities', 'quotations', 'proforma_invoices',
   'invoices', 'document_templates', 'products', 'subscriptions', 'tickets', 'calls', 'meetings',
   'tasks', 'notes', 'emails', 'payments', 'documents', 'teams', 'workflows', 'reports', 'users',
-  'chat', 'calendar', 'settings'];
-const MODULE_LABEL = { proforma_invoices: 'Proforma Invoices', document_templates: 'Document Templates' };
+  'chat', 'calendar', 'settings', 'support', 'support_settings', 'kb_articles', 'major_incidents', 'problems',
+  'service_catalog', 'assets'];
+const MODULE_LABEL = {
+  proforma_invoices: 'Proforma Invoices', document_templates: 'Document Templates',
+  support: 'Support Desk', support_settings: 'Support Settings', kb_articles: 'Knowledge Base',
+  major_incidents: 'Major Incidents', service_catalog: 'Service Catalog',
+};
 const ACTIONS = ['view', 'create', 'edit', 'delete', 'export'];
 const ACTION_KEYS = { view: 'can_view', create: 'can_create', edit: 'can_edit', delete: 'can_delete', export: 'can_export' };
 

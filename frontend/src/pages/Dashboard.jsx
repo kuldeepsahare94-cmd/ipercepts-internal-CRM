@@ -79,7 +79,7 @@ const grad = (t, deg = 135) => `linear-gradient(${deg}deg, ${t.g[0]}, ${t.g[1]})
 // Solid gradient icon tile with a soft coloured shadow — the main source of
 // colour on the page, so the white cards read as rich rather than plain.
 const tile = (t) => ({ background: grad(t), color: '#FFFFFF', boxShadow: `0 8px 16px -8px rgba(${t.rgb}, 0.75)` });
-const PRIORITY_TONE = { Urgent: '#F43F5E', High: '#F97316', Medium: '#F59E0B', Low: '#3B82F6', Unset: '#94A3B8' };
+const PRIORITY_TONE = { Critical: '#F43F5E', Urgent: '#F43F5E', High: '#F97316', Medium: '#F59E0B', Low: '#3B82F6', Unset: '#94A3B8' };
 
 // ---------------------------------------------------------------------------
 // Links
@@ -468,17 +468,19 @@ function Kpi({ label, value, icon: Icon, tone, to, sub, locked, children }) {
   );
 }
 
-function TrendPill({ trend }) {
+function TrendPill({ trend, onClick }) {
   if (!trend || trend.delta_pct === null || trend.delta_pct === undefined || trend.delta_pct === 0) return null;
   const down = trend.delta_pct < 0;
   const good = trend.good_when === 'down' ? down : !down;
+  // Clickable when the card offers its records (opens the same choice as the card).
+  const Tag = onClick ? 'button' : 'span';
   return (
-    <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-1.5 py-0.5 rounded-md"
+    <Tag {...(onClick ? { type: 'button', onClick } : {})} className={`inline-flex items-center gap-1 text-[11px] font-semibold px-1.5 py-0.5 rounded-md${onClick ? ' dash-link' : ''}`}
       title={`${trend.current} now vs ${trend.previous} seven days ago`}
       style={{ color: good ? 'var(--color-success-strong)' : 'var(--color-danger-strong)', background: good ? 'var(--color-success-soft)' : 'var(--color-danger-soft)' }}>
       {down ? <ArrowDownRight className="w-3 h-3" /> : <ArrowUpRight className="w-3 h-3" />}
       {Math.abs(trend.delta_pct)}% <span className="font-normal">{trend.label}</span>
-    </span>
+    </Tag>
   );
 }
 
@@ -517,7 +519,7 @@ function OverdueActionsCard({ oa, ctx }) {
           </span>
         ))}
       </div>
-      {oa.trend && <div className="relative dash-above mt-1.5"><TrendPill trend={oa.trend} /></div>}
+      {oa.trend && <div className="relative dash-above mt-1.5"><TrendPill trend={oa.trend} onClick={oa.locked ? undefined : () => setOpen((o) => !o)} /></div>}
       {open && (
         <div role="menu" className="dash-menu absolute left-2 right-2 top-[70px] z-30 p-1.5">
           {oa.parts.filter((p) => !p.locked).map((p) => (
@@ -659,7 +661,7 @@ function MeetingsCard({ m, ctx }) {
   );
 }
 
-const PRIORITY_PILL = { Urgent: ['#FFF1F2', '#BE123C'], High: ['#FFF1F2', '#E11D48'], Medium: ['#FFFBEB', '#B45309'], Low: ['#EFF6FF', '#2563EB'] };
+const PRIORITY_PILL = { Critical: ['#FFF1F2', '#BE123C'], Urgent: ['#FFF1F2', '#BE123C'], High: ['#FFF1F2', '#E11D48'], Medium: ['#FFFBEB', '#B45309'], Low: ['#EFF6FF', '#2563EB'] };
 function TasksCard({ t, ctx }) {
   const to = drillHref(t, ctx);
   return (
@@ -770,7 +772,9 @@ function PipelineByStage({ pbs, ctx, go }) {
           {pbs.stages.length === 0 && <li className="text-[12px]" style={{ color: 'var(--color-muted)' }}>No open opportunities.</li>}
         </ul>
       </div>
-      <p className="text-[11px] mt-2" style={{ color: 'var(--color-faint)' }}>{pbs.total} open · {inr(pbs.value)} · Won and Lost excluded</p>
+      <p className="text-[11px] mt-2" style={{ color: 'var(--color-faint)' }}>
+        <DLink to={allTo} className="hover:underline" label={`${pbs.total} open opportunities, ${inr(pbs.value)}`}>{pbs.total} open · {inr(pbs.value)}</DLink> · Won and Lost excluded
+      </p>
     </Panel>
   );
 }
@@ -794,7 +798,6 @@ function LeadsBySource({ lbs, ctx }) {
   useEffect(() => { const id = requestAnimationFrame(() => setGrown(true)); return () => cancelAnimationFrame(id); }, []);
   if (!lbs) return <Panel title="Leads by Source" icon={UserPlus} accent={COLORS.blue}><Empty><Locked /></Empty></Panel>;
   const max = Math.max(1, ...lbs.top.map((s) => s.count));
-  const shown = lbs.top.reduce((a, s) => a + s.count, 0);
   return (
     <Panel title="Leads by Source" subtitle={`Top ${lbs.top.length} of ${lbs.source_count} sources · All time`} icon={IndianRupee} accent={COLORS.blue}
       action={<ViewLink to={drillHref(lbs, ctx)}>View leads</ViewLink>}>
@@ -816,7 +819,8 @@ function LeadsBySource({ lbs, ctx }) {
       </ul>
       {lbs.top.length > 0 && (
         <p className="text-[11px] mt-2" style={{ color: 'var(--color-faint)' }}>
-          {shown} of {lbs.total} leads shown{lbs.source_count > lbs.top.length ? `; ${lbs.source_count - lbs.top.length} smaller source${lbs.source_count - lbs.top.length === 1 ? '' : 's'} not charted` : ''}
+          Top {lbs.top.length} of{' '}
+          <DLink to={drillHref(lbs, ctx)} className="hover:underline" label={`All ${lbs.total} leads`}>{lbs.total} leads</DLink>{lbs.source_count > lbs.top.length ? `; ${lbs.source_count - lbs.top.length} smaller source${lbs.source_count - lbs.top.length === 1 ? '' : 's'} not charted` : ''}
         </p>
       )}
     </Panel>
@@ -859,7 +863,8 @@ function Collections({ c, ctx }) {
             <DLink to={drillHref(c.invoiced, ctx)} className="font-semibold" style={{ color: 'var(--color-ink)' }} label={`Total invoiced ${inr(c.invoiced.sum)}`}>
               {inrShort(c.invoiced.sum)}
             </DLink>
-            <span style={{ color: 'var(--color-faint)' }}> · {c.invoiced.count} invoices</span>
+            <span style={{ color: 'var(--color-faint)' }}> · </span>
+            <DLink to={drillHref(c.invoiced, ctx)} className="hover:underline" style={{ color: 'var(--color-faint)' }} label={`${c.invoiced.count} invoices`}>{c.invoiced.count} invoices</DLink>
           </div>
           <div className="h-[8px] rounded-full overflow-hidden mt-2.5" style={{ background: '#E6F4EE' }}>
             <div className="dash-bar-fill h-full rounded-full" style={{ width: grown ? `${Math.min(100, pct || 0)}%` : '0%', background: 'var(--color-success)' }} />

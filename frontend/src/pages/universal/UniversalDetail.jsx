@@ -21,6 +21,7 @@ import DocumentActionsPanel from './DocumentActionsPanel';
 import DocumentPaymentsPanel from './DocumentPaymentsPanel';
 import SubscriptionPanels, { CustomerSubscriptions } from './SubscriptionPanels';
 import AssignPicker from '../../components/AssignPicker';
+import { TicketSupportPanel, IncidentPanel, ProblemPanel } from '../support/SupportRecordPanels';
 import { USER_TYPES } from './fieldUtils';
 
 // Modules whose records are sales documents: line items, a PDF, a place in a
@@ -30,7 +31,8 @@ const SALES_DOCUMENT_MODULES = new Set(['quotations', 'proforma_invoices', 'invo
 // Any array-of-objects the dedicated module route embeds in its detail
 // response (e.g. Accounts embeds contacts/opportunities/quotations/...) is
 // rendered as its own tab automatically — no per-module wiring needed.
-const NON_RELATION_ARRAY_KEYS = new Set(); // reserved, currently nothing to exclude
+// Ticket replies render in the Support panel's conversation, not as a tab.
+const NON_RELATION_ARRAY_KEYS = new Set(['replies']);
 
 // Follow-up Timer (master prompt section 11) shares its field-detection and
 // status logic with UniversalList's small dot indicator — see followupUtils.js.
@@ -929,6 +931,17 @@ export default function UniversalDetail() {
           canViewPayments={can('payments', 'view')} onUpdated={load} />
       )}
 
+      {/* Support Desk: SLA, coverage, conversation, timeline and actions. */}
+      {module.api_name === 'tickets' && can('support', 'view') && (
+        <TicketSupportPanel record={record} canEdit={can('tickets', 'edit')} onUpdated={load} />
+      )}
+      {module.api_name === 'major_incidents' && (
+        <IncidentPanel record={record} canEdit={can('major_incidents', 'edit')} onUpdated={load} />
+      )}
+      {module.api_name === 'problems' && (
+        <ProblemPanel record={record} canEdit={can('problems', 'edit')} onUpdated={load} />
+      )}
+
       {/* The customer's subscriptions and AMCs, one row per subscription. */}
       {module.api_name === 'accounts' && can('subscriptions', 'view') && (
         <CustomerSubscriptions accountId={Number(id)} accountName={record.account_name}
@@ -1024,9 +1037,9 @@ export default function UniversalDetail() {
       {tab === 'overview' && (
         <div className="mt-5">
           {layout?.sections?.length > 0 ? (
-            <div className="grid md:grid-cols-2 gap-4">
+            <div className="md:columns-2 gap-4">
               {layout.sections.map((section, si) => (
-                <div key={si} className="border border-line rounded-xl p-4">
+                <div key={si} className="border border-line rounded-xl p-4 mb-4 break-inside-avoid">
                   <div className="flex items-center gap-2 mb-2 pb-2 border-b border-line">
                     <span className="w-1.5 h-4 rounded-full shrink-0"
                       style={{ background: accentFor(module.api_name).solid }} />
@@ -1046,9 +1059,9 @@ export default function UniversalDetail() {
           ) : detailFields.length === 0 ? (
             <div className="text-sm text-slate-400">No fields configured for this module yet.</div>
           ) : (
-            <div className="grid md:grid-cols-2 gap-4">
+            <div className="md:columns-2 gap-4">
               {groupFields(detailFields).map((group) => (
-                <div key={group.title} className="border border-line rounded-xl p-4">
+                <div key={group.title} className="border border-line rounded-xl p-4 mb-4 break-inside-avoid">
                   <div className="flex items-center gap-2 mb-2 pb-2 border-b border-line">
                     <span className="w-1.5 h-4 rounded-full shrink-0"
                       style={{ background: accentFor(module.api_name).solid }} />
