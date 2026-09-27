@@ -19,7 +19,7 @@ import { KpiCard, SkeletonRows, ErrorState, EmptyState, friendlyError } from '..
 import DrillBanner, { useDrill, applyDrill } from '../../components/DrillBanner';
 import AssignPicker from '../../components/AssignPicker';
 import {
-  FilterButton, FilterPanel, ActiveFilterChips, SavedFiltersMenu, applyFilters, isComplete, useMe,
+  FilterButton, FilterPanel, ActiveFilterChips, SavedFiltersMenu, applyFilters, isComplete, useMe, extraRecordFields,
   useSelection, RowCheckbox, BulkBar, BulkUpdateModal, BulkAssignModal, BulkDeleteModal, runBulk,
 } from '../../components/ListTools';
 import { USER_TYPES } from './fieldUtils';
@@ -135,10 +135,18 @@ export default function UniversalList() {
     // (and briefly showing) the unfiltered list. The ids are passed to the
     // API too, so a list endpoint with a row cap still returns every match.
     if (drill.active && !drill.idSet) return;
-    api.universalList(module, { q, ids: drill.active ? drill.idsParam : undefined })
-      .then(setRecords).catch((e) => setError(friendlyError(e, 'Unable to load records.')));
+    // Custom fields on a standard module live in a separate store; their
+    // values are merged onto each row so the list can filter on them too.
+    const hasCustom = !!module.table_name && fields.some((f) => !f.is_system);
+    Promise.all([
+      api.universalList(module, { q, ids: drill.active ? drill.idsParam : undefined }),
+      hasCustom ? api.getAllCustomFieldValues(module.api_name).catch(() => ({})) : null,
+    ])
+      .then(([rows, custom]) => setRecords(custom && Array.isArray(rows) ? rows.map((r) => ({ ...r, ...(custom[r.id] || {}) })) : rows))
+      .catch((e) => setError(friendlyError(e, 'Unable to load records.')));
   };
-  useEffect(() => { load(); }, [module, drill.idsParam, drill.active]);
+  const customKey = fields.filter((f) => !f.is_system).length;
+  useEffect(() => { load(); }, [module, drill.idsParam, drill.active, customKey]);
   useEffect(() => { const t = setTimeout(load, 300); return () => clearTimeout(t); }, [q]);
 
   const listFields = useMemo(() => fields.filter((f) => f.show_in_list), [fields]);
@@ -178,6 +186,9 @@ export default function UniversalList() {
   }, [statusField, records]);
 
   const kpis = useMemo(() => kpisFor(moduleApiName, records), [moduleApiName, records]);
+  // Every configured field, plus columns the records carry that are not
+  // configured fields (a pipeline's Stage, for one).
+  const filterFields = useMemo(() => [...fields, ...extraRecordFields(records, fields, module)], [fields, records, module]);
 
   const filtered = useMemo(() => {
     let rows = applyDrill(records, drill);
@@ -188,9 +199,9 @@ export default function UniversalList() {
     // replacing them, so the two controls compose instead of fighting.
     const active = kpis?.find((k) => k.label === kpiFilter);
     if (active?.filter) rows = rows.filter(active.filter);
-    rows = applyFilters(rows, conditions, match, fields, getFieldValue, me);
+    rows = applyFilters(rows, conditions, match, filterFields, getFieldValue, me);
     return rows;
-  }, [records, statusField, statusFilter, kpiFilter, kpis, drill.idSet, drill.active, conditions, match, fields, me]);
+  }, [records, statusField, statusFilter, kpiFilter, kpis, drill.idSet, drill.active, conditions, match, filterFields, me]);
 
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
@@ -243,7 +254,6 @@ export default function UniversalList() {
 
   // Custom fields on a standard module are stored apart from the record, so
   // the list rows don't carry them and they can't be filtered client-side.
-  const filterFields = fields.filter((f) => !module.table_name || f.is_system);
   const userFields = fields.filter((f) => USER_TYPES.has(f.field_type) && f.show_in_edit !== 0);
   const canEdit = can(module.api_name, 'edit');
   const pageIds = pageRows.map((r) => r.id);
@@ -441,7 +451,7 @@ export default function UniversalList() {
 
       {showFilters && (
         <FilterPanel key={activeSaved?.id || 'adhoc'} module={module.api_name} fields={filterFields}
-          initial={conditions} initialMatch={match}
+          initial={conditions} initialMatch={match} rows={records} getValue={getFieldValue}
           onClose={() => setShowFilters(false)}
           onSaved={() => setSavedRefresh((n) => n + 1)}
           onApply={(conds, m, saved) => { setConditions(conds); setMatch(m); setActiveSaved(saved || null); setShowFilters(false); }} />

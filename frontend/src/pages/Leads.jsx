@@ -26,7 +26,7 @@ const STATUSES = ['New', 'Contacted', 'Interested', 'Follow-up', 'Converted', 'D
 // Lead columns described as fields, so the shared filter, bulk update and
 // assignment tools work on Leads exactly as on every other module.
 const optsOf = (list) => JSON.stringify(list.map((v) => ({ value: v, label: v })));
-function leadFields(statuses, sources) {
+function leadFields(statuses, sources, qualifications = []) {
   const f = (api_name, label, field_type, extra = {}) => ({ api_name, label, field_type, is_system: 1, show_in_edit: 1, ...extra });
   return [
     f('student_name', 'Lead name', 'text', { required: 1, show_in_edit: 0 }),
@@ -44,6 +44,13 @@ function leadFields(statuses, sources) {
     f('product_interest', 'Product interest', 'text'),
     f('service_interest', 'Service interest', 'text'),
     f('lead_score', 'Lead score', 'number', { show_in_edit: 0 }),
+    f('qualification', 'Qualification', qualifications.length ? 'dropdown' : 'text', qualifications.length ? { options_json: optsOf(qualifications) } : {}),
+    f('gender', 'Gender', 'dropdown', { options_json: optsOf(['Male', 'Female', 'Other']) }),
+    f('date_of_birth', 'Date of birth', 'date'),
+    f('address', 'Address', 'text'),
+    f('alternate_mobile', 'Alternate mobile', 'phone'),
+    f('remarks', 'Remarks', 'textarea'),
+    f('converted_at', 'Converted on', 'date', { show_in_edit: 0 }),
   ];
 }
 const leadValue = (row, field) => row[field.api_name];
@@ -441,6 +448,7 @@ export default function Leads() {
   const can = usePermissions();
   const [list, setList] = useState([]);
   const [sources, setSources] = useState([]);
+  const [qualifications, setQualifications] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [view, setView] = useState(() => localStorage.getItem('leads_view') || 'list');
@@ -476,6 +484,7 @@ export default function Leads() {
     // Failing to load them must never take the page down, so it degrades
     // to an empty dropdown rather than throwing.
     api.listMasterOptions?.('lead_source').then(setSources).catch(() => setSources([]));
+    api.listMasterOptions?.('qualification').then(setQualifications).catch(() => setQualifications([]));
   }, [statusFilter]);
 
   useEffect(() => { const t = setTimeout(load, 300); return () => clearTimeout(t); }, [q]);
@@ -490,7 +499,8 @@ export default function Leads() {
   const fields = useMemo(() => leadFields(
     [...new Set([...STATUSES, ...list.map((l) => l.status).filter(Boolean)])],
     [...new Set([...sources.map((s) => s.label), ...list.map((l) => l.source).filter(Boolean)])],
-  ), [list, sources]);
+    [...new Set([...qualifications.map((s) => s.label), ...list.map((l) => l.qualification).filter(Boolean)])],
+  ), [list, sources, qualifications]);
 
   const filtered = useMemo(() => applyFilters(applyDrill(list, drill).filter((l) => (
     (!sourceFilter || l.source === sourceFilter) &&
@@ -613,7 +623,7 @@ export default function Leads() {
 
       {showFilters && (
         <div className="mb-3">
-          <FilterPanel key={activeSaved?.id || 'adhoc'} module="leads" fields={fields} initial={conditions} initialMatch={match}
+          <FilterPanel key={activeSaved?.id || 'adhoc'} module="leads" fields={fields} initial={conditions} initialMatch={match} rows={list} getValue={leadValue}
             onClose={() => setShowFilters(false)} onSaved={() => setSavedRefresh((n) => n + 1)}
             onApply={(conds, m, saved) => { setConditions(conds); setMatch(m); setActiveSaved(saved || null); setShowFilters(false); }} />
         </div>

@@ -17,7 +17,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Bookmark, BookmarkPlus, Check, ChevronDown, Download, Filter, Pencil, Plus, Trash2, UserRoundCog, Users, X,
+  Bookmark, BookmarkPlus, Check, ChevronDown, Download, Filter, Pencil, Plus, Settings2, Trash2, UserRoundCog, Users, X,
 } from 'lucide-react';
 import { api } from '../api';
 import { useDirectory } from './userDirectory';
@@ -41,21 +41,23 @@ export function kindOf(field) {
   if (t === 'user' || t === 'user_name') return 'user';
   if (t === 'team') return 'team';
   if (t === 'lookup') return 'lookup';
+  // A text field that was given a list of options is filtered as a choice.
+  if (parseOptions(field).length) return 'choice';
   return 'text';
 }
 
 const OPS = {
-  text: [['contains', 'contains'], ['not_contains', 'does not contain'], ['eq', 'is'], ['neq', 'is not'], ['starts', 'starts with'], ['empty', 'is empty'], ['not_empty', 'is not empty']],
-  number: [['eq', '='], ['neq', '≠'], ['gt', '>'], ['gte', '≥'], ['lt', '<'], ['lte', '≤'], ['between', 'between'], ['empty', 'is empty'], ['not_empty', 'is not empty']],
-  date: [['on', 'is on'], ['before', 'is before'], ['after', 'is after'], ['between', 'is between'], ['today', 'is today'], ['last_days', 'in the last … days'], ['next_days', 'in the next … days'], ['overdue', 'is before today'], ['empty', 'is empty'], ['not_empty', 'is not empty']],
+  text: [['in', 'is any of'], ['contains', 'contains'], ['not_contains', 'does not contain'], ['eq', 'is'], ['neq', 'is not'], ['starts', 'starts with'], ['empty', 'is empty'], ['not_empty', 'is not empty']],
+  number: [['range', 'between (min / max)'], ['eq', '='], ['neq', '≠'], ['gt', '>'], ['gte', '≥'], ['lt', '<'], ['lte', '≤'], ['between', 'between'], ['empty', 'is empty'], ['not_empty', 'is not empty']],
+  date: [['range', 'from / to'], ['on', 'is on'], ['before', 'is before'], ['after', 'is after'], ['between', 'is between'], ['today', 'is today'], ['yesterday', 'is yesterday'], ['this_week', 'is this week'], ['last_week', 'is last week'], ['this_month', 'is this month'], ['last_month', 'is last month'], ['last_days', 'in the last … days'], ['next_days', 'in the next … days'], ['overdue', 'is before today'], ['empty', 'is empty'], ['not_empty', 'is not empty']],
   choice: [['in', 'is any of'], ['not_in', 'is none of'], ['empty', 'is empty'], ['not_empty', 'is not empty']],
   multi: [['has_any', 'has any of'], ['has_none', 'has none of'], ['empty', 'is empty'], ['not_empty', 'is not empty']],
   bool: [['yes', 'is Yes'], ['no', 'is No']],
   user: [['in', 'is any of'], ['not_in', 'is none of'], ['me', 'is me'], ['empty', 'is unassigned'], ['not_empty', 'is assigned']],
-  team: [['in', 'is any of'], ['empty', 'is empty'], ['not_empty', 'is not empty']],
+  team: [['in', 'is any of'], ['not_in', 'is none of'], ['empty', 'is empty'], ['not_empty', 'is not empty']],
   lookup: [['eq', 'is'], ['neq', 'is not'], ['empty', 'is empty'], ['not_empty', 'is not empty']],
 };
-const NO_VALUE = new Set(['empty', 'not_empty', 'today', 'overdue', 'yes', 'no', 'me']);
+const NO_VALUE = new Set(['empty', 'not_empty', 'today', 'yesterday', 'this_week', 'last_week', 'this_month', 'last_month', 'overdue', 'yes', 'no', 'me']);
 export const opsFor = (field) => OPS[kindOf(field)];
 
 // ---------------------------------------------------------------------------
@@ -63,6 +65,9 @@ export const opsFor = (field) => OPS[kindOf(field)];
 // ---------------------------------------------------------------------------
 const localToday = () => new Date().toLocaleDateString('en-CA');
 const shift = (d, n) => new Date(Date.parse(`${d}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+const weekStart = (d) => { const day = new Date(`${d}T00:00:00Z`).getUTCDay(); return shift(d, -((day + 6) % 7)); }; // Monday
+const monthStart = (d) => `${d.slice(0, 7)}-01`;
+const prevMonthStart = (d) => { const [y, m] = d.split('-').map(Number); return m === 1 ? `${y - 1}-12-01` : `${y}-${String(m - 1).padStart(2, '0')}-01`; };
 const blank = (v) => v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0);
 const asList = (v) => (Array.isArray(v) ? v : blank(v) ? [] : String(v).split(',').map((x) => x.trim()).filter(Boolean));
 
@@ -75,6 +80,7 @@ function matchOne(raw, cond, field, me) {
   if (k === 'text') {
     const s = String(raw ?? '').toLowerCase();
     const v = String(cond.value ?? '').toLowerCase();
+    if (op === 'in') return asList(cond.value).map((x) => String(x).toLowerCase()).includes(s);
     if (op === 'contains') return s.includes(v);
     if (op === 'not_contains') return !s.includes(v);
     if (op === 'eq') return s === v;
@@ -84,6 +90,7 @@ function matchOne(raw, cond, field, me) {
   if (k === 'number') {
     if (blank(raw)) return false;
     const n = Number(raw); const a = Number(cond.value); const b = Number(cond.value2);
+    if (op === 'range') return (blank(cond.value) || n >= a) && (blank(cond.value2) || n <= b);
     return { eq: n === a, neq: n !== a, gt: n > a, gte: n >= a, lt: n < a, lte: n <= a, between: n >= a && n <= b }[op] ?? true;
   }
   if (k === 'date') {
@@ -91,8 +98,13 @@ function matchOne(raw, cond, field, me) {
     const d = String(raw).slice(0, 10); const t = localToday();
     const a = String(cond.value ?? '').slice(0, 10); const b = String(cond.value2 ?? '').slice(0, 10);
     const n = Number(cond.value) || 0;
+    const ws = weekStart(t); const ms = monthStart(t); const pms = prevMonthStart(t);
     return {
+      range: (!a || d >= a) && (!b || d <= b),
       on: d === a, before: d < a, after: d > a, between: d >= a && d <= b, today: d === t, overdue: d < t,
+      yesterday: d === shift(t, -1),
+      this_week: d >= ws && d <= shift(ws, 6), last_week: d >= shift(ws, -7) && d < ws,
+      this_month: d >= ms && d.slice(0, 7) === t.slice(0, 7), last_month: d >= pms && d < ms,
       last_days: d >= shift(t, -n) && d <= t, next_days: d >= t && d <= shift(t, n),
     }[op] ?? true;
   }
@@ -119,82 +131,189 @@ function matchOne(raw, cond, field, me) {
 export function isComplete(cond) {
   if (!cond.field || !cond.op) return false;
   if (NO_VALUE.has(cond.op)) return true;
+  if (cond.op === 'range') return !blank(cond.value) || !blank(cond.value2);
   if (cond.op === 'between') return !blank(cond.value) && !blank(cond.value2);
   return !blank(cond.value);
 }
 
+// Quick (form) conditions must all hold; the advanced ones combine by `match`.
 export function applyFilters(rows, conditions, match, fields, getValue, me) {
   const live = (conditions || []).filter(isComplete).map((c) => ({ c, f: fields.find((x) => x.api_name === c.field) })).filter((x) => x.f);
   if (!live.length) return rows;
+  const quick = live.filter((x) => x.c.quick);
+  const adv = live.filter((x) => !x.c.quick);
   return rows.filter((r) => {
-    const results = live.map(({ c, f }) => matchOne(getValue(r, f), c, f, me));
+    if (!quick.every(({ c, f }) => matchOne(getValue(r, f), c, f, me))) return false;
+    if (!adv.length) return true;
+    const results = adv.map(({ c, f }) => matchOne(getValue(r, f), c, f, me));
     return match === 'any' ? results.some(Boolean) : results.every(Boolean);
   });
 }
 
-// Fields worth filtering on: everything the module has, minus internal ids.
+// Fields worth filtering on: everything the module has, minus files.
 export function filterableFields(fields) {
-  return fields.filter((f) => !['file', 'image'].includes(f.field_type) && f.api_name !== 'related_record_id');
+  return fields.filter((f) => !['file', 'image'].includes(f.field_type) && f.api_name !== 'related_record_id' && f.filterable !== 0);
+}
+
+// When nobody has chosen filter fields, start from the fields people filter
+// on most: stage/status, pick-lists, owners, dates, amounts — long text last.
+const NOT_DEFAULT = new Set(['textarea', 'rich_text', 'email', 'phone', 'url']);
+export function defaultFilterFields(fields) {
+  const usable = filterableFields(fields).filter((f) => !NOT_DEFAULT.has(f.field_type));
+  const rank = (f) => {
+    if (/^(stage_name|status|stage)$/.test(f.api_name)) return -1;
+    const order = { choice: 0, user: 1, team: 2, multi: 3, date: 4, number: 5, bool: 6, lookup: 7, text: 8 }[kindOf(f)] ?? 9;
+    return order * 2 + (f.show_in_list ? 0 : 1) + (f.virtual ? 40 : 0);
+  };
+  return [...usable].sort((a, b) => rank(a) - rank(b) || (a.position ?? 0) - (b.position ?? 0)).slice(0, 8).map((f) => f.api_name);
+}
+
+// Columns a list's records carry that are not configured module fields (a
+// pipeline's stage, product/service text, …) — offered as filter fields too.
+const SKIP_EXTRA = /(^id$|_id$|_ids$|_color$|_colour$|_json$|^is_|password|token|secret|^record_name$|_encrypted$)/;
+export function extraRecordFields(records, fields, module) {
+  const known = new Set(fields.map((f) => f.api_name));
+  // Display names of lookups (account_name for account_id) are covered by the lookup.
+  fields.filter((f) => f.field_type === 'lookup').forEach((f) => known.add(f.api_name.replace(/_id$/, '_name')));
+  const sample = (records || []).slice(0, 300);
+  if (!sample.length) return [];
+  const keys = new Set();
+  sample.forEach((r) => Object.keys(r).forEach((k) => keys.add(k)));
+  const out = [];
+  keys.forEach((k) => {
+    if (known.has(k) || SKIP_EXTRA.test(k)) return;
+    const vals = sample.map((r) => r[k]).filter((v) => !blank(v));
+    if (!vals.length || vals.some((v) => typeof v === 'object')) return;
+    const label = k === 'stage_name' ? 'Stage' : k.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    let type = 'text';
+    if (/_at$|_date$|^date/.test(k) && vals.every((v) => /^\d{4}-\d{2}-\d{2}/.test(String(v)))) type = 'date';
+    else if (vals.every((v) => typeof v === 'number')) type = 'number';
+    const f = { api_name: k, label, field_type: type, is_system: 1, show_in_list: 0, show_in_edit: 0, virtual: true, position: 999 };
+    if (k === 'stage_name' || (type === 'text' && module?.has_pipeline && /stage/.test(k))) {
+      f.field_type = 'dropdown';
+      f.show_in_list = 1;
+      f.options_json = JSON.stringify([...new Set(vals.map(String))].map((v) => ({ value: v, label: v })));
+    }
+    out.push(f);
+  });
+  return out;
 }
 
 // ---------------------------------------------------------------------------
 // Value editors
 // ---------------------------------------------------------------------------
-function MultiPick({ options, value, onChange }) {
-  const selected = asList(value).map(String);
-  const toggle = (v) => onChange(selected.includes(v) ? selected.filter((x) => x !== v) : [...selected, v]);
-  return (
-    <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto p-1 rounded-lg border border-line bg-white min-h-[38px]">
-      {options.length === 0 && <span className="text-xs text-slate-400 px-1 py-1">No options</span>}
-      {options.map((o) => {
-        const on = selected.includes(String(o.value));
-        return (
-          <button type="button" key={o.value} onClick={() => toggle(String(o.value))} aria-pressed={on}
-            className="text-xs px-2 py-1 rounded-full border inline-flex items-center gap-1 transition-colors"
-            style={on ? { background: 'var(--color-brand-soft)', borderColor: 'var(--color-brand-border)', color: 'var(--color-brand)' } : { borderColor: 'var(--color-line)', color: 'var(--color-ink)' }}>
-            {on && <Check className="w-3 h-3" />}{o.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function choiceOptions(field, dir) {
+function choiceOptions(field, dir, rows, getValue) {
   const k = kindOf(field);
   if (k === 'user') {
     return (dir?.users || []).filter((u) => u.active !== 0)
       .map((u) => ({ value: field.field_type === 'user_name' ? u.name : String(u.id), label: u.name }));
   }
   if (k === 'team') return (dir?.teams || []).map((t) => ({ value: String(t.id), label: t.name }));
+  if (k === 'text') {
+    // Free-text fields offer the values already in the list (cities, sources…).
+    const seen = new Map();
+    (rows || []).forEach((r) => {
+      const v = getValue ? getValue(r, field) : r[field.api_name];
+      if (blank(v)) return;
+      const key = String(v).trim();
+      if (key && !seen.has(key.toLowerCase())) seen.set(key.toLowerCase(), key);
+    });
+    return [...seen.values()].sort((a, b) => a.localeCompare(b)).map((v) => ({ value: v, label: v }));
+  }
   return parseOptions(field).map((o) => (typeof o === 'string' ? { value: o, label: o } : { value: String(o.value ?? o.label), label: String(o.label ?? o.value) }));
 }
 
-function ValueEditor({ field, cond, onChange }) {
+// A dropdown that selects several values, with search.
+function MultiSelect({ options, value, onChange, placeholder = 'Any', onContains }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const ref = useRef(null);
+  const selected = asList(value).map(String);
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const esc = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', close); document.addEventListener('keydown', esc);
+    return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', esc); };
+  }, [open]);
+  const shown = options.filter((o) => !q || String(o.label).toLowerCase().includes(q.toLowerCase()));
+  const labelOf = (v) => options.find((o) => String(o.value) === v)?.label || v;
+  const toggle = (v) => onChange(selected.includes(v) ? selected.filter((x) => x !== v) : [...selected, v]);
+  const summary = selected.length === 0 ? placeholder
+    : selected.length <= 2 ? selected.map(labelOf).join(', ') : `${labelOf(selected[0])}, ${labelOf(selected[1])} +${selected.length - 2}`;
+  return (
+    <div className="relative" ref={ref}>
+      <button type="button" onClick={() => setOpen((o) => !o)} aria-haspopup="listbox" aria-expanded={open}
+        className="input w-full flex items-center justify-between gap-2 text-left">
+        <span className={`truncate ${selected.length ? '' : 'text-slate-400'}`}>{summary}</span>
+        <span className="flex items-center gap-1 shrink-0">
+          {selected.length > 0 && <span className="text-[10.5px] font-bold px-1.5 rounded-full text-white" style={{ background: 'var(--color-brand)' }}>{selected.length}</span>}
+          <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+        </span>
+      </button>
+      {open && (
+        <div className="absolute z-40 mt-1 w-full min-w-[220px] bg-white border border-line rounded-xl shadow-xl p-1.5" role="listbox" aria-multiselectable="true">
+          {options.length > 6 && (
+            <input autoFocus className="input w-full mb-1.5 py-1.5 text-[13px]" placeholder="Search…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search options" />
+          )}
+          <div className="max-h-56 overflow-y-auto">
+            {shown.length === 0 && <p className="px-2 py-2 text-xs text-slate-400">{options.length ? 'No match' : 'No values yet'}</p>}
+            {shown.map((o) => {
+              const on = selected.includes(String(o.value));
+              return (
+                <label key={o.value} className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-[13px] cursor-pointer hover:bg-[var(--color-brand-faint)]">
+                  <input type="checkbox" checked={on} onChange={() => toggle(String(o.value))} className="w-4 h-4 accent-[var(--color-brand)]" />
+                  <span className="truncate" style={{ color: 'var(--color-ink)' }}>{o.label}</span>
+                </label>
+              );
+            })}
+          </div>
+          {onContains && q.trim() && (
+            <button type="button" onClick={() => { onContains(q.trim()); setOpen(false); }}
+              className="w-full text-left px-2 py-1.5 mt-1 rounded-lg text-[12.5px] font-semibold hover:bg-[var(--color-brand-faint)]" style={{ color: 'var(--color-brand)' }}>
+              Match text containing “{q.trim()}”
+            </button>
+          )}
+          {selected.length > 0 && (
+            <div className="flex justify-between border-t border-line mt-1 pt-1 px-1">
+              <button type="button" className="text-[12px] font-semibold" style={{ color: 'var(--color-muted)' }} onClick={() => onChange([])}>Clear</button>
+              <button type="button" className="text-[12px] font-semibold" style={{ color: 'var(--color-brand)' }} onClick={() => setOpen(false)}>Done</button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Advanced-condition value editor: follows the field type and the operator.
+function ValueEditor({ field, cond, onChange, rows, getValue }) {
   const dir = useDirectory();
   const k = kindOf(field);
   if (NO_VALUE.has(cond.op)) return <div className="text-xs text-slate-400 px-1 py-2">No value needed</div>;
-  if (['choice', 'multi', 'user', 'team'].includes(k)) {
-    return <MultiPick options={choiceOptions(field, dir)} value={cond.value} onChange={(v) => onChange({ value: v })} />;
+  if (['choice', 'multi', 'user', 'team'].includes(k) || (k === 'text' && cond.op === 'in')) {
+    return <MultiSelect options={choiceOptions(field, dir, rows, getValue)} value={cond.value} onChange={(v) => onChange({ value: v })} placeholder="Select…" />;
   }
   if (k === 'date') {
     if (cond.op === 'last_days' || cond.op === 'next_days') {
       return <input type="number" min="1" className="input w-full" placeholder="Days" value={cond.value ?? ''} onChange={(e) => onChange({ value: e.target.value })} />;
     }
+    const two = cond.op === 'between' || cond.op === 'range';
     return (
       <div className="flex items-center gap-1.5">
         <input type="date" className="input w-full" value={cond.value ?? ''} onChange={(e) => onChange({ value: e.target.value })} aria-label="Date" />
-        {cond.op === 'between' && <><span className="text-xs text-slate-400">and</span>
+        {two && <><span className="text-xs text-slate-400">to</span>
           <input type="date" className="input w-full" value={cond.value2 ?? ''} onChange={(e) => onChange({ value2: e.target.value })} aria-label="End date" /></>}
       </div>
     );
   }
   if (k === 'number') {
+    const two = cond.op === 'between' || cond.op === 'range';
     return (
       <div className="flex items-center gap-1.5">
-        <input type="number" className="input w-full" value={cond.value ?? ''} onChange={(e) => onChange({ value: e.target.value })} aria-label="Value" />
-        {cond.op === 'between' && <><span className="text-xs text-slate-400">and</span>
-          <input type="number" className="input w-full" value={cond.value2 ?? ''} onChange={(e) => onChange({ value2: e.target.value })} aria-label="Upper value" /></>}
+        <input type="number" className="input w-full" placeholder={two ? 'Min' : 'Value'} value={cond.value ?? ''} onChange={(e) => onChange({ value: e.target.value })} aria-label="Value" />
+        {two && <><span className="text-xs text-slate-400">to</span>
+          <input type="number" className="input w-full" placeholder="Max" value={cond.value2 ?? ''} onChange={(e) => onChange({ value2: e.target.value })} aria-label="Upper value" /></>}
       </div>
     );
   }
@@ -203,12 +322,194 @@ function ValueEditor({ field, cond, onChange }) {
 }
 
 // ---------------------------------------------------------------------------
+// Quick filter form: one control per chosen field, shown all at once.
+// ---------------------------------------------------------------------------
+const DATE_PRESETS = [
+  ['', 'Any time'], ['today', 'Today'], ['yesterday', 'Yesterday'], ['this_week', 'This week'], ['last_week', 'Last week'],
+  ['this_month', 'This month'], ['last_month', 'Last month'], ['last_7', 'Last 7 days'], ['last_30', 'Last 30 days'],
+  ['next_7', 'Next 7 days'], ['next_30', 'Next 30 days'], ['overdue', 'Before today'], ['empty', 'Not set'], ['range', 'Custom range…'],
+];
+function datePresetOf(c) {
+  if (!c) return '';
+  if (c.op === 'last_days') return `last_${c.value}`;
+  if (c.op === 'next_days') return `next_${c.value}`;
+  return c.op;
+}
+function dateCondFor(field, preset, prev) {
+  if (!preset) return null;
+  const m = /^(last|next)_(\d+)$/.exec(preset);
+  if (m) return { field, op: `${m[1]}_days`, value: m[2], quick: true };
+  if (preset === 'range') return { field, op: 'range', value: prev?.op === 'range' ? prev.value : '', value2: prev?.op === 'range' ? prev.value2 : '', quick: true };
+  return { field, op: preset, value: '', quick: true };
+}
+
+function QuickControl({ field, cond, onChange, rows, getValue }) {
+  const dir = useDirectory();
+  const k = kindOf(field);
+  const name = field.api_name;
+  const set = (c) => onChange(c);
+  if (['choice', 'user', 'team', 'multi'].includes(k)) {
+    const opts = choiceOptions(field, dir, rows, getValue);
+    const extra = k === 'user' ? [{ value: '__me', label: 'Me' }, { value: '__none', label: 'Unassigned' }, ...opts] : [{ value: '__none', label: '(Not set)' }, ...opts];
+    const cur = !cond ? [] : cond.op === 'me' ? ['__me'] : cond.op === 'empty' ? ['__none'] : asList(cond.value);
+    return (
+      <MultiSelect options={extra} value={cur} onChange={(v) => {
+        if (!v.length) return set(null);
+        if (v.includes('__me') && v.length === 1) return set({ field: name, op: 'me', value: '', quick: true });
+        if (v.includes('__none') && v.length === 1) return set({ field: name, op: 'empty', value: '', quick: true });
+        const vals = v.filter((x) => x !== '__me' && x !== '__none');
+        return set({ field: name, op: k === 'multi' ? 'has_any' : 'in', value: vals, quick: true });
+      }} />
+    );
+  }
+  if (k === 'text') {
+    const opts = choiceOptions(field, dir, rows, getValue);
+    if (cond?.op === 'contains' || opts.length === 0 || opts.length > 300) {
+      return (
+        <div className="relative">
+          <input className="input w-full" placeholder="Contains…" value={cond?.op === 'contains' ? cond.value : ''} aria-label={`${field.label} contains`}
+            onChange={(e) => set(e.target.value ? { field: name, op: 'contains', value: e.target.value, quick: true } : null)} />
+          {cond?.op === 'contains' && opts.length > 0 && opts.length <= 300 && (
+            <button type="button" className="absolute right-2 top-1/2 -translate-y-1/2 text-[11px] font-semibold" style={{ color: 'var(--color-brand)' }} onClick={() => set(null)}>List</button>
+          )}
+        </div>
+      );
+    }
+    return <MultiSelect options={opts} value={cond?.op === 'in' ? cond.value : []} placeholder="Any"
+      onChange={(v) => set(v.length ? { field: name, op: 'in', value: v, quick: true } : null)}
+      onContains={(text) => set({ field: name, op: 'contains', value: text, quick: true })} />;
+  }
+  if (k === 'number') {
+    const min = cond?.op === 'range' ? cond.value ?? '' : '';
+    const max = cond?.op === 'range' ? cond.value2 ?? '' : '';
+    const upd = (a, b) => set(a === '' && b === '' ? null : { field: name, op: 'range', value: a, value2: b, quick: true });
+    return (
+      <div className="flex items-center gap-1.5">
+        <input type="number" className="input w-full" placeholder="Min" value={min} onChange={(e) => upd(e.target.value, max)} aria-label={`${field.label} minimum`} />
+        <span className="text-xs text-slate-400">–</span>
+        <input type="number" className="input w-full" placeholder="Max" value={max} onChange={(e) => upd(min, e.target.value)} aria-label={`${field.label} maximum`} />
+      </div>
+    );
+  }
+  if (k === 'date') {
+    const preset = datePresetOf(cond);
+    return (
+      <div className="space-y-1.5">
+        <select className="input w-full" value={DATE_PRESETS.some(([v]) => v === preset) ? preset : preset ? 'range' : ''} aria-label={`${field.label} period`}
+          onChange={(e) => set(dateCondFor(name, e.target.value, cond))}>
+          {DATE_PRESETS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+        </select>
+        {cond?.op === 'range' && (
+          <div className="flex items-center gap-1.5">
+            <input type="date" className="input w-full" value={cond.value || ''} aria-label={`${field.label} from`} onChange={(e) => set({ ...cond, value: e.target.value })} />
+            <input type="date" className="input w-full" value={cond.value2 || ''} aria-label={`${field.label} to`} onChange={(e) => set({ ...cond, value2: e.target.value })} />
+          </div>
+        )}
+      </div>
+    );
+  }
+  if (k === 'bool') {
+    return (
+      <select className="input w-full" value={cond?.op || ''} onChange={(e) => set(e.target.value ? { field: name, op: e.target.value, value: '', quick: true } : null)} aria-label={field.label}>
+        <option value="">Any</option><option value="yes">Yes</option><option value="no">No</option>
+      </select>
+    );
+  }
+  if (k === 'lookup') {
+    return <FieldInput field={field} value={cond?.value ?? ''} onChange={(v) => set(blank(v) ? null : { field: name, op: 'eq', value: v, quick: true })} />;
+  }
+  return null;
+}
+
+// Pick which fields the filter form shows — for me, or (admins) for everyone.
+function ChooseFieldsDialog({ fields, chosen, canEditDefault, hasMine, onSave, onClose }) {
+  const usable = useMemo(() => filterableFields(fields), [fields]);
+  const [sel, setSel] = useState(chosen);
+  const [q, setQ] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const shown = usable.filter((f) => !q || f.label.toLowerCase().includes(q.toLowerCase()));
+  const toggle = (n) => setSel((s) => (s.includes(n) ? s.filter((x) => x !== n) : [...s, n]));
+  const move = (n, d) => setSel((s) => { const i = s.indexOf(n); const j = i + d; if (i < 0 || j < 0 || j >= s.length) return s; const c = [...s]; [c[i], c[j]] = [c[j], c[i]]; return c; });
+  const go = async (scope, value) => { setBusy(true); setErr(''); try { await onSave(scope, value); onClose(); } catch (e) { setErr(e.message); } finally { setBusy(false); } };
+  const TYPE = { text: 'Text', choice: 'Dropdown', multi: 'Multi-select', user: 'User', team: 'Team', number: 'Number', date: 'Date', bool: 'Yes / No', lookup: 'Lookup' };
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true" aria-label="Choose filter fields">
+      <div className="bg-white rounded-2xl w-full max-w-3xl shadow-2xl flex flex-col max-h-[88vh]">
+        <div className="px-5 pt-5 pb-3 border-b border-line flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-[15px] font-semibold text-ink">Filter fields</h2>
+            <p className="text-xs mt-0.5" style={{ color: 'var(--color-muted)' }}>Tick the fields to show in the filter form. Each gets the right control for its type.</p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close" className="text-slate-400 hover:text-ink"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-[1fr_260px] gap-4 p-5 overflow-hidden min-h-0">
+          <div className="flex flex-col min-h-0">
+            <input className="input w-full mb-2" placeholder="Search fields…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search fields" />
+            <div className="overflow-y-auto grid grid-cols-1 sm:grid-cols-2 gap-x-3 pr-1 min-h-0">
+              {shown.map((f) => (
+                <label key={f.api_name} className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-[13px] cursor-pointer hover:bg-[var(--color-brand-faint)]">
+                  <input type="checkbox" checked={sel.includes(f.api_name)} onChange={() => toggle(f.api_name)} className="w-4 h-4 accent-[var(--color-brand)]" />
+                  <span className="truncate flex-1" style={{ color: 'var(--color-ink)' }}>{f.label}</span>
+                  <span className="text-[10.5px] shrink-0" style={{ color: 'var(--color-faint)' }}>{TYPE[kindOf(f)]}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="flex flex-col min-h-0">
+            <div className="text-xs font-semibold mb-1.5" style={{ color: 'var(--color-muted)' }}>Shown in this order ({sel.length})</div>
+            <ol className="overflow-y-auto space-y-1 min-h-0 rounded-xl p-1.5" style={{ background: 'var(--color-surface-soft)' }}>
+              {sel.length === 0 && <li className="text-xs px-2 py-2 text-slate-400">Nothing selected.</li>}
+              {sel.map((n, i) => {
+                const f = usable.find((x) => x.api_name === n);
+                if (!f) return null;
+                return (
+                  <li key={n} className="flex items-center gap-1 bg-white rounded-lg px-2 py-1 text-[12.5px] border border-line">
+                    <span className="flex-1 truncate">{f.label}</span>
+                    <button type="button" aria-label={`Move ${f.label} up`} disabled={i === 0} onClick={() => move(n, -1)} className="px-1 text-slate-400 disabled:opacity-30">↑</button>
+                    <button type="button" aria-label={`Move ${f.label} down`} disabled={i === sel.length - 1} onClick={() => move(n, 1)} className="px-1 text-slate-400 disabled:opacity-30">↓</button>
+                    <button type="button" aria-label={`Remove ${f.label}`} onClick={() => toggle(n)} className="px-1 text-slate-400"><X className="w-3 h-3" /></button>
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
+        </div>
+        {err && <p className="px-5 text-xs" role="alert" style={{ color: 'var(--color-danger-strong)' }}>{err}</p>}
+        <div className="px-5 py-3 border-t border-line flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex gap-2">
+            {hasMine && <button type="button" disabled={busy} className="btn btn-secondary" onClick={() => go('mine', null)}>Reset to default</button>}
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            {canEditDefault && <button type="button" disabled={busy || !sel.length} className="btn btn-secondary" onClick={() => go('default', sel)}>Save as default for everyone</button>}
+            <button type="button" disabled={busy || !sel.length} className="btn btn-primary" onClick={() => go('mine', sel)}>Save for me</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Filter panel
 // ---------------------------------------------------------------------------
-export function FilterPanel({ module, fields, initial, initialMatch = 'all', onApply, onClose, onSaved }) {
+export function FilterPanel({ module, fields, initial, initialMatch = 'all', onApply, onClose, onSaved, rows: records, getValue }) {
   const usable = useMemo(() => filterableFields(fields), [fields]);
+  const [layout, setLayout] = useState(null);
+  const [choosing, setChoosing] = useState(false);
+  const loadLayout = () => api.getFilterLayout(module).then(setLayout).catch(() => setLayout({ module_default: null, mine: null, can_edit_default: false }));
+  useEffect(() => { loadLayout(); }, [module]); // eslint-disable-line react-hooks/exhaustive-deps
+  const quickNames = useMemo(() => {
+    const pick = layout?.mine || layout?.module_default || defaultFilterFields(fields);
+    return pick.filter((n) => usable.some((f) => f.api_name === n));
+  }, [layout, fields, usable]);
+
+  // Quick values keyed by field; advanced rows are everything else.
+  const [quick, setQuick] = useState(() => Object.fromEntries((initial || []).filter((c) => c.quick).map((c) => [c.field, { ...c }])));
   const fresh = () => ({ field: usable[0]?.api_name || '', op: usable[0] ? opsFor(usable[0])[0][0] : '', value: '', value2: '' });
-  const [rows, setRows] = useState(() => (initial?.length ? initial.map((r) => ({ ...r })) : [fresh()]));
+  const initialAdv = (initial || []).filter((c) => !c.quick);
+  const [rows, setRows] = useState(() => (initialAdv.length ? initialAdv.map((r) => ({ ...r })) : []));
+  const [showAdv, setShowAdv] = useState(initialAdv.length > 0);
   const [match, setMatch] = useState(initialMatch);
   const [saveName, setSaveName] = useState('');
   const [share, setShare] = useState(false);
@@ -216,11 +517,14 @@ export function FilterPanel({ module, fields, initial, initialMatch = 'all', onA
   const [msg, setMsg] = useState('');
 
   const set = (i, patch) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
-  const complete = rows.filter(isComplete);
+  const setQ = (name, c) => setQuick((qv) => { const n = { ...qv }; if (c) n[name] = c; else delete n[name]; return n; });
+  // A quick value on a field that is no longer in the form still applies — shown in its own row.
+  const orphanQuick = Object.keys(quick).filter((n) => !quickNames.includes(n) && usable.some((f) => f.api_name === n));
+  const complete = [...Object.values(quick).filter(isComplete), ...rows.filter(isComplete)];
 
   const save = async () => {
     if (!saveName.trim()) { setMsg('Give the filter a name to save it.'); return; }
-    if (!complete.length) { setMsg('Complete at least one condition first.'); return; }
+    if (!complete.length) { setMsg('Set at least one filter first.'); return; }
     setSaving(true); setMsg('');
     try {
       const saved = await api.saveFilter({ module, name: saveName.trim(), filters: complete, match, shared: share });
@@ -230,43 +534,83 @@ export function FilterPanel({ module, fields, initial, initialMatch = 'all', onA
     } catch (e) { setMsg(e.message); } finally { setSaving(false); }
   };
 
+  const renderQuick = (name) => {
+    const f = usable.find((x) => x.api_name === name);
+    if (!f) return null;
+    const active = !!quick[name] && isComplete(quick[name]);
+    return (
+      <div key={name} className="min-w-0">
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[11.5px] font-semibold truncate" style={{ color: active ? 'var(--color-brand)' : 'var(--color-muted)' }}>{f.label}</span>
+          {active && <button type="button" className="text-[11px]" style={{ color: 'var(--color-faint)' }} onClick={() => setQ(name, null)} aria-label={`Clear ${f.label}`}>Clear</button>}
+        </div>
+        <QuickControl field={f} cond={quick[name]} onChange={(c) => setQ(name, c)} rows={records} getValue={getValue} />
+      </div>
+    );
+  };
+
   return (
     <section className="card p-4 mt-3" aria-label="Filters" style={{ borderColor: 'var(--color-brand-border)' }}>
       <div className="flex items-center justify-between gap-2 flex-wrap mb-3">
-        <h3 className="text-sm font-semibold text-ink flex items-center gap-2"><Filter className="w-4 h-4" style={{ color: 'var(--color-brand)' }} /> Filter records</h3>
-        <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--color-muted)' }}>
-          Match
-          <select className="input w-auto py-1" value={match} onChange={(e) => setMatch(e.target.value)} aria-label="Match all or any">
-            <option value="all">all conditions</option>
-            <option value="any">any condition</option>
-          </select>
+        <h3 className="text-sm font-semibold text-ink flex items-center gap-2"><Filter className="w-4 h-4" style={{ color: 'var(--color-brand)' }} /> Filter records
+          <span className="text-[11.5px] font-normal" style={{ color: 'var(--color-muted)' }}>· set any number of fields; all must match</span>
+        </h3>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={() => setChoosing(true)} className="text-[12px] font-semibold inline-flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-[var(--color-brand-faint)]" style={{ color: 'var(--color-brand)' }}>
+            <Settings2 className="w-3.5 h-3.5" /> Choose fields
+          </button>
           <button type="button" onClick={onClose} aria-label="Close filters" className="p-1 rounded hover:bg-slate-100"><X className="w-4 h-4" /></button>
         </div>
       </div>
-      <div className="space-y-2">
-        {rows.map((r, i) => {
-          const f = usable.find((x) => x.api_name === r.field) || usable[0];
-          return (
-            <div key={i} className="grid grid-cols-1 md:grid-cols-[210px_180px_1fr_32px] gap-2 items-start">
-              <select className="input w-full" value={r.field} aria-label="Field"
-                onChange={(e) => { const nf = usable.find((x) => x.api_name === e.target.value); set(i, { field: e.target.value, op: opsFor(nf)[0][0], value: '', value2: '' }); }}>
-                {usable.map((x) => <option key={x.api_name} value={x.api_name}>{x.label}</option>)}
+
+      {layout === null ? <div className="h-16 rounded-xl animate-pulse" style={{ background: 'var(--color-canvas)' }} /> : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-4 gap-y-3">
+          {quickNames.map(renderQuick)}
+          {orphanQuick.map(renderQuick)}
+          {quickNames.length === 0 && <p className="text-xs text-slate-400">No filter fields chosen. Use “Choose fields”.</p>}
+        </div>
+      )}
+
+      <div className="mt-4">
+        <button type="button" onClick={() => { setShowAdv((v) => !v); if (!rows.length) setRows([fresh()]); }}
+          className="text-xs font-semibold inline-flex items-center gap-1" style={{ color: 'var(--color-brand)' }} aria-expanded={showAdv}>
+          <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showAdv ? '' : '-rotate-90'}`} /> Advanced conditions{rows.filter(isComplete).length ? ` (${rows.filter(isComplete).length})` : ''}
+          <span className="font-normal" style={{ color: 'var(--color-faint)' }}>— “is not”, “is empty”, date ranges, any/all</span>
+        </button>
+        {showAdv && (
+          <div className="mt-2 rounded-xl p-3 space-y-2" style={{ background: 'var(--color-surface-soft)' }}>
+            <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--color-muted)' }}>
+              Match
+              <select className="input w-auto py-1" value={match} onChange={(e) => setMatch(e.target.value)} aria-label="Match all or any">
+                <option value="all">all of these</option>
+                <option value="any">any of these</option>
               </select>
-              <select className="input w-full" value={r.op} aria-label="Condition" onChange={(e) => set(i, { op: e.target.value })}>
-                {f && opsFor(f).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-              </select>
-              {f ? <ValueEditor field={f} cond={r} onChange={(p) => set(i, p)} /> : <span />}
-              <button type="button" onClick={() => setRows((rs) => (rs.length === 1 ? [fresh()] : rs.filter((_, j) => j !== i)))}
-                aria-label="Remove condition" className="h-[38px] w-8 rounded-lg flex items-center justify-center hover:bg-slate-100 text-slate-400">
-                <Trash2 className="w-4 h-4" />
-              </button>
             </div>
-          );
-        })}
+            {rows.map((r, i) => {
+              const f = usable.find((x) => x.api_name === r.field) || usable[0];
+              return (
+                <div key={i} className="grid grid-cols-1 md:grid-cols-[210px_180px_1fr_32px] gap-2 items-start">
+                  <select className="input w-full" value={r.field} aria-label="Field"
+                    onChange={(e) => { const nf = usable.find((x) => x.api_name === e.target.value); set(i, { field: e.target.value, op: opsFor(nf)[0][0], value: '', value2: '' }); }}>
+                    {usable.map((x) => <option key={x.api_name} value={x.api_name}>{x.label}</option>)}
+                  </select>
+                  <select className="input w-full" value={r.op} aria-label="Condition" onChange={(e) => set(i, { op: e.target.value, value: '', value2: '' })}>
+                    {f && opsFor(f).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+                  </select>
+                  {f ? <ValueEditor field={f} cond={r} onChange={(p) => set(i, p)} rows={records} getValue={getValue} /> : <span />}
+                  <button type="button" onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))}
+                    aria-label="Remove condition" className="h-[38px] w-8 rounded-lg flex items-center justify-center hover:bg-slate-100 text-slate-400">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              );
+            })}
+            <button type="button" onClick={() => setRows((rs) => [...rs, fresh()])} className="text-xs font-semibold inline-flex items-center gap-1" style={{ color: 'var(--color-brand)' }}>
+              <Plus className="w-3.5 h-3.5" /> Add condition
+            </button>
+          </div>
+        )}
       </div>
-      <button type="button" onClick={() => setRows((rs) => [...rs, fresh()])} className="mt-2 text-xs font-semibold inline-flex items-center gap-1" style={{ color: 'var(--color-brand)' }}>
-        <Plus className="w-3.5 h-3.5" /> Add condition
-      </button>
 
       <div className="flex items-end justify-between gap-3 flex-wrap mt-4 pt-3 border-t border-line">
         <div className="flex items-end gap-2 flex-wrap">
@@ -281,11 +625,22 @@ export function FilterPanel({ module, fields, initial, initialMatch = 'all', onA
           </button>
         </div>
         <div className="flex gap-2">
-          <button type="button" onClick={() => { setRows([fresh()]); onApply([], match, null); }} className="btn btn-secondary">Clear</button>
+          <button type="button" onClick={() => { setQuick({}); setRows([]); onApply([], match, null); }} className="btn btn-secondary">Clear all</button>
           <button type="button" onClick={() => onApply(complete, match, null)} className="btn btn-primary">Apply{complete.length ? ` (${complete.length})` : ''}</button>
         </div>
       </div>
       {msg && <p className="text-xs mt-2" role="status" style={{ color: 'var(--color-muted)' }}>{msg}</p>}
+
+      {choosing && layout && (
+        <ChooseFieldsDialog fields={fields} chosen={quickNames} canEditDefault={layout.can_edit_default} hasMine={!!layout.mine}
+          onClose={() => setChoosing(false)}
+          onSave={async (scope, value) => {
+            await api.saveFilterLayout(module, scope, value);
+            // Saving the default for everyone also resets my own choice to it.
+            if (scope === 'default' && layout.mine) await api.saveFilterLayout(module, 'mine', null);
+            await loadLayout();
+          }} />
+      )}
     </section>
   );
 }
@@ -308,8 +663,14 @@ function describe(cond, field, dir) {
   if (NO_VALUE.has(cond.op)) return `${field.label} ${opLabel}`;
   let v = cond.value;
   const k = kindOf(field);
-  if (['choice', 'multi', 'user', 'team'].includes(k)) {
-    const opts = choiceOptions(field, dir);
+  if (cond.op === 'range') {
+    const cur = field.field_type === 'currency' ? (x) => formatFieldValue(x, field) : (x) => x;
+    if (!blank(cond.value) && !blank(cond.value2)) return `${field.label}: ${cur(cond.value)} – ${cur(cond.value2)}`;
+    if (!blank(cond.value)) return `${field.label} ${k === 'date' ? 'from' : '≥'} ${cur(cond.value)}`;
+    return `${field.label} ${k === 'date' ? 'up to' : '≤'} ${cur(cond.value2)}`;
+  }
+  if (['choice', 'multi', 'user', 'team'].includes(k) || (k === 'text' && cond.op === 'in')) {
+    const opts = k === 'text' ? [] : choiceOptions(field, dir);
     v = asList(cond.value).map((x) => opts.find((o) => String(o.value) === String(x))?.label || x).join(', ');
   } else if (k === 'number' && field.field_type === 'currency') v = formatFieldValue(cond.value, field);
   if (cond.op === 'between') v = `${v} and ${cond.value2}`;
