@@ -189,6 +189,20 @@ export default function UniversalList() {
   // Every configured field, plus columns the records carry that are not
   // configured fields (a pipeline's Stage, for one).
   const filterFields = useMemo(() => [...fields, ...extraRecordFields(records, fields, module)], [fields, records, module]);
+  // Opportunities: Stage is set through the pipeline, so mass update offers it
+  // as its own field, listing the pipeline's stages.
+  const [stages, setStages] = useState([]);
+  useEffect(() => {
+    if (module?.api_name !== 'opportunities') { setStages([]); return; }
+    api.listPipelines('opportunities').then((ps) => {
+      const many = ps.filter((x) => x.active !== 0).length > 1;
+      setStages(ps.filter((x) => x.active !== 0).flatMap((pl) => (pl.stages || []).filter((st) => st.active !== 0)
+        .map((st) => ({ value: st.id, label: many ? `${pl.name} · ${st.name}` : st.name }))));
+    }).catch(() => setStages([]));
+  }, [module?.api_name]);
+  const massFields = useMemo(() => (stages.length
+    ? [{ api_name: 'stage_id', label: 'Stage', field_type: 'dropdown', value_type: 'number', pipeline_stage: true, is_system: 1, show_in_edit: 1, options_json: JSON.stringify(stages) }, ...fields]
+    : fields), [stages, fields]);
 
   const filtered = useMemo(() => {
     let rows = applyDrill(records, drill);
@@ -267,6 +281,21 @@ export default function UniversalList() {
     : api.universalUpdate(module, id, { [field.api_name]: value }));
   const runUpdate = async (field, value, onProgress) => {
     const result = await runBulk(selectedIds, updateOne(field, value), onProgress);
+    load();
+    return result;
+  };
+  // Mass update: all chosen fields in one save per record. A pipeline stage
+  // moves through the stage route (history, probability, automations); custom
+  // fields on a standard module go to their own store.
+  const runUpdateMany = async (changes, onProgress) => {
+    const stage = changes.find((c) => c.field.pipeline_stage);
+    const custom = changes.filter((c) => !c.field.pipeline_stage && module.table_name && !c.field.is_system);
+    const standard = changes.filter((c) => !c.field.pipeline_stage && !custom.includes(c));
+    const result = await runBulk(selectedIds, async (id) => {
+      if (stage && stage.value != null) await api.moveOpportunityStage(id, stage.value);
+      if (standard.length) await api.universalUpdate(module, id, Object.fromEntries(standard.map((c) => [c.field.api_name, c.value])));
+      if (custom.length) await api.saveCustomFieldValues(module.api_name, id, Object.fromEntries(custom.map((c) => [c.field.api_name, c.value])));
+    }, onProgress);
     load();
     return result;
   };
@@ -663,8 +692,8 @@ export default function UniversalList() {
       </div>
 
       {bulk === 'update' && (
-        <BulkUpdateModal fields={fields} count={selection.ids.size} noun={singularLabel.toLowerCase()}
-          onRun={runUpdate} onClose={() => { setBulk(null); }} />
+        <BulkUpdateModal fields={massFields} count={selection.ids.size} noun={singularLabel.toLowerCase()}
+          rows={records} getValue={getFieldValue} onRun={runUpdateMany} onClose={() => { setBulk(null); }} />
       )}
       {bulk === 'assign' && (
         <BulkAssignModal userFields={userFields} count={selection.ids.size} noun={singularLabel.toLowerCase()}

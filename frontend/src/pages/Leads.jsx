@@ -522,6 +522,12 @@ export default function Leads() {
     load();
     return result;
   };
+  const runUpdateMany = async (changes, onProgress) => {
+    const body = Object.fromEntries(changes.map((c) => [c.field.api_name, c.value]));
+    const result = await runBulk(selectedIds, (id) => api.updateLead(id, body), onProgress);
+    load();
+    return result;
+  };
   const runDelete = async (onProgress) => {
     const result = await runBulk(selectedIds, (id) => api.deleteLead(id), onProgress, 2);
     selection.clear();
@@ -744,7 +750,7 @@ export default function Leads() {
       )}
 
       {bulk === 'update' && (
-        <BulkUpdateModal fields={fields} count={selection.ids.size} noun="lead" onRun={runUpdate} onClose={() => setBulk(null)} />
+        <BulkUpdateModal fields={fields} count={selection.ids.size} noun="lead" rows={list} getValue={leadValue} onRun={runUpdateMany} onClose={() => setBulk(null)} />
       )}
       {bulk === 'assign' && (
         <BulkAssignModal userFields={fields.filter((f) => f.field_type === 'user_name')} count={selection.ids.size} noun="lead"
