@@ -35,6 +35,7 @@ require('./db-phase43-permission-completeness');
 require('./db-phase44-subscriptions-amc');
 require('./db-phase45-list-tools');
 require('./db-phase46-support-desk');
+require('./db-phase47-filter-layouts');
 
 const app = express();
 

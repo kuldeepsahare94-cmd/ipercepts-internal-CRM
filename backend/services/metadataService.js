@@ -204,6 +204,17 @@ function getCustomFieldValues(moduleId, recordId) {
   return out;
 }
 
+function getAllCustomFieldValues(moduleId) {
+  const rows = db.prepare(`
+    SELECT cfv.*, f.api_name, f.field_type
+    FROM custom_field_values cfv JOIN module_fields f ON f.id = cfv.field_id
+    WHERE cfv.module_id=?
+  `).all(moduleId);
+  const out = {};
+  for (const r of rows) (out[r.record_id] = out[r.record_id] || {})[r.api_name] = coerceOut(r);
+  return out;
+}
+
 function setCustomFieldValues(moduleId, recordId, values, userId) {
   const fields = db.prepare('SELECT * FROM module_fields WHERE module_id=? AND is_system=0').all(moduleId);
   const byApiName = Object.fromEntries(fields.map((f) => [f.api_name, f]));
@@ -415,7 +426,7 @@ module.exports = {
   fieldUsage,
   listModules, getModule, createModule, updateModule, deleteModule,
   listFields, createField, updateField, deleteField,
-  getCustomFieldValues, setCustomFieldValues,
+  getCustomFieldValues, getAllCustomFieldValues, setCustomFieldValues,
   listCustomRecords, getCustomRecord, createCustomRecord, updateCustomRecord, deleteCustomRecord,
   linkRecords, unlinkRecords, getRelatedRecords,
   getLayout, saveLayout,

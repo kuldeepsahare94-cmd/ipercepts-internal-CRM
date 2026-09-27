@@ -40,6 +40,12 @@ function handle(res, fn) {
 
 // ----- Custom module records -----
 
+// Custom field values for every record of a standard module, keyed by record
+// id — lets a list show and filter on custom fields without one request per row.
+router.get('/:module/custom-field-values', resolveModule, checkPerm('view'), (req, res) => {
+  handle(res, () => svc.getAllCustomFieldValues(req.crmModule.id));
+});
+
 router.get('/:module', resolveModule, checkPerm('view'), (req, res) => {
   if (req.crmModule.table_name) {
     return res.status(400).json({ error: `"${req.crmModule.api_name}" is a standard module with its own routes — use its existing /api/${req.crmModule.api_name} endpoint for records.` });
