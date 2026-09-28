@@ -1,0 +1,354 @@
+diff --git a/frontend/src/components/ListTools.jsx b/frontend/src/components/ListTools.jsx
+index 13047e2..8845cea 100644
+--- a/frontend/src/components/ListTools.jsx
++++ b/frontend/src/components/ListTools.jsx
+@@ -821,7 +821,7 @@ export function BulkBar({ count, pageCount, matchingCount, allPageSelected, onSe
+         <button type="button" onClick={onClear} className="underline underline-offset-2 text-white/80 hover:text-white">Clear selection</button>
+       </div>
+       <div className="flex items-center gap-1.5 flex-wrap">
+-        {canEdit && <button type="button" onClick={onUpdate} className={`${btn} bg-white/15 hover:bg-white/25`}><Pencil className="w-4 h-4" /> Bulk update</button>}
++        {canEdit && <button type="button" onClick={onUpdate} className={`${btn} bg-white/15 hover:bg-white/25`}><Pencil className="w-4 h-4" /> Mass update</button>}
+         {canEdit && hasUserField && <button type="button" onClick={onAssign} className={`${btn} bg-white/15 hover:bg-white/25`}><UserRoundCog className="w-4 h-4" /> Assign to</button>}
+         {canExport && <button type="button" onClick={onExport} className={`${btn} bg-white/15 hover:bg-white/25`}><Download className="w-4 h-4" /> Export</button>}
+         {canDelete && <button type="button" onClick={onDelete} className={`${btn} bg-white text-rose-600 hover:bg-rose-50`}><Trash2 className="w-4 h-4" /> Delete</button>}
+@@ -845,7 +845,7 @@ function Progress({ done, total }) {
+ function Result({ result, noun, onClose }) {
+   return (
+     <div className="mt-3 text-sm" role="status">
+-      <p style={{ color: 'var(--color-success-strong)' }}>{result.ok} {noun}{result.ok === 1 ? '' : 's'} updated.</p>
++      <p style={{ color: 'var(--color-success-strong)' }}>{result.ok} {plural(noun, result.ok)} updated.</p>
+       {result.failed.length > 0 && (
+         <div className="mt-2 rounded-lg p-2 text-xs max-h-40 overflow-y-auto" style={{ background: 'var(--color-danger-soft)', color: 'var(--color-danger-strong)' }}>
+           <b>{result.failed.length} could not be changed:</b>
+@@ -874,52 +874,166 @@ function Modal({ title, onClose, children }) {
+   );
+ }
+ 
+-// Update one field on every selected record.
+-export function BulkUpdateModal({ fields, count, noun, onRun, onClose }) {
+-  const editable = useMemo(() => fields.filter((f) => f.show_in_edit !== 0 && !['file', 'image'].includes(f.field_type)), [fields]);
+-  const [fieldName, setFieldName] = useState(editable[0]?.api_name || '');
+-  const [value, setValue] = useState('');
+-  const [clear, setClear] = useState(false);
++// "opportunity" → "opportunities", "lead" → "leads".
++export const plural = (noun, n) => (n === 1 ? noun : /[^aeiou]y$/i.test(noun) ? `${noun.slice(0, -1)}ies` : /(s|x|ch|sh)$/i.test(noun) ? `${noun}es` : `${noun}s`);
++
++// Mass update: set any number of fields at once on every selected record.
++// Every editable field is listed with the input its type needs; a field left
++// on "No change" is not sent, so nothing else on the records is touched.
++const NO_CHANGE = undefined;
++function MassValueInput({ field, value, onChange, rows, getValue }) {
++  const dir = useDirectory();
++  const t = field.field_type;
++  const k = kindOf(field);
++  const cleared = value === null;
++  const opts = choiceOptions(field, dir, rows, getValue);
++  const sel = (children, v, set) => (
++    <select className="input w-full" value={v} onChange={(e) => set(e.target.value)} aria-label={field.label}>{children}</select>
++  );
++  if (k === 'choice' || k === 'team' || k === 'user') {
++    const v = value === NO_CHANGE ? '__nochange' : value === null ? '__clear' : String(value);
++    return sel(
++      <>
++        <option value="__nochange">— No change —</option>
++        {!field.required && <option value="__clear">{k === 'user' ? 'Unassigned (clear)' : 'Clear value'}</option>}
++        {opts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
++      </>, v,
++      (x) => onChange(x === '__nochange' ? NO_CHANGE : x === '__clear' ? null
++        : (k === 'team' || (k === 'user' && field.field_type === 'user') || field.value_type === 'number') ? Number(x) : x),
++    );
++  }
++  if (k === 'bool') {
++    const v = value === NO_CHANGE ? '' : value ? 'yes' : 'no';
++    return sel(<><option value="">— No change —</option><option value="yes">Yes</option><option value="no">No</option></>, v,
++      (x) => onChange(x === '' ? NO_CHANGE : x === 'yes'));
++  }
++  if (k === 'multi') {
++    return <MultiSelect options={opts} value={Array.isArray(value) ? value : []} placeholder="— No change —"
++      onChange={(v) => onChange(v.length ? v : NO_CHANGE)} />;
++  }
++  if (k === 'lookup') {
++    return cleared ? <div className="input w-full text-slate-400">Will be cleared</div>
++      : <FieldInput field={field} value={value ?? ''} onChange={(v) => onChange(blank(v) ? NO_CHANGE : v)} />;
++  }
++  if (cleared) return <div className="input w-full text-slate-400">Will be cleared</div>;
++  if (k === 'date') {
++    return <input type={t === 'datetime' ? 'datetime-local' : 'date'} className="input w-full" value={value ?? ''} aria-label={field.label}
++      onChange={(e) => onChange(e.target.value || NO_CHANGE)} />;
++  }
++  if (k === 'number') {
++    return <input type="number" step="any" className="input w-full" placeholder="No change" value={value ?? ''} aria-label={field.label}
++      onChange={(e) => onChange(e.target.value === '' ? NO_CHANGE : Number(e.target.value))} />;
++  }
++  if (t === 'textarea' || t === 'rich_text') {
++    return <textarea rows={2} className="input w-full" placeholder="No change" value={value ?? ''} aria-label={field.label}
++      onChange={(e) => onChange(e.target.value === '' ? NO_CHANGE : e.target.value)} />;
++  }
++  // Text: suggest the values already used (cities, sources…) but allow any.
++  const listId = `mu-${field.api_name}`;
++  return (
++    <>
++      <input type={t === 'email' ? 'email' : t === 'url' ? 'url' : t === 'phone' ? 'tel' : 'text'} list={opts.length ? listId : undefined}
++        className="input w-full" placeholder="No change" value={value ?? ''} aria-label={field.label}
++        onChange={(e) => onChange(e.target.value === '' ? NO_CHANGE : e.target.value)} />
++      {opts.length > 0 && <datalist id={listId}>{opts.slice(0, 300).map((o) => <option key={o.value} value={o.value} />)}</datalist>}
++    </>
++  );
++}
++
++export function BulkUpdateModal({ fields, count, noun, onRun, onClose, rows, getValue }) {
++  const editable = useMemo(() => fields.filter((f) => f.show_in_edit !== 0 && !f.virtual_readonly && !['file', 'image'].includes(f.field_type)), [fields]);
++  const [vals, setVals] = useState({});
++  const [q, setQ] = useState('');
++  const [onlySet, setOnlySet] = useState(false);
+   const [progress, setProgress] = useState(null);
+   const [result, setResult] = useState(null);
+-  const field = editable.find((f) => f.api_name === fieldName);
++  const dir = useDirectory();
++  const changes = editable.filter((f) => vals[f.api_name] !== NO_CHANGE).map((f) => ({ field: f, value: vals[f.api_name] }));
++  const setVal = (name, v) => setVals((x) => { const n = { ...x }; if (v === NO_CHANGE) delete n[name]; else n[name] = v; return n; });
++  const shown = editable.filter((f) => (!q || f.label.toLowerCase().includes(q.toLowerCase())) && (!onlySet || vals[f.api_name] !== NO_CHANGE));
+ 
++  const describeValue = (f, v) => {
++    if (v === null) return 'cleared';
++    if (typeof v === 'boolean') return v ? 'Yes' : 'No';
++    if (Array.isArray(v)) return v.join(', ');
++    const o = choiceOptions(f, dir).find((x) => String(x.value) === String(v));
++    return o ? o.label : String(v);
++  };
+   const run = async () => {
+-    if (!field) return;
+-    const v = clear ? null : (field.field_type === 'checkbox' ? !!value : value);
+-    if (!clear && (v === '' || v === undefined) && field.field_type !== 'checkbox') return;
++    if (!changes.length) return;
+     setProgress({ done: 0, total: count });
+-    setResult(await onRun(field, v, (done, total) => setProgress({ done, total })));
++    setResult(await onRun(changes, (done, total) => setProgress({ done, total })));
+   };
+ 
++  useEffect(() => {
++    const esc = (e) => { if (e.key === 'Escape' && !progress) onClose(); };
++    document.addEventListener('keydown', esc);
++    return () => document.removeEventListener('keydown', esc);
++  }, [onClose, progress]);
++
+   return (
+-    <Modal title={`Bulk update ${count} ${noun}${count === 1 ? '' : 's'}`} onClose={onClose}>
+-      {result ? <Result result={result} noun={noun} onClose={onClose} /> : (
+-        <>
+-          <label className="text-xs font-medium text-slate-500 block">Field to update
+-            <select className="input w-full mt-1" value={fieldName} onChange={(e) => { setFieldName(e.target.value); setValue(''); setClear(false); }} disabled={!!progress}>
+-              {editable.map((f) => <option key={f.api_name} value={f.api_name}>{f.label}</option>)}
+-            </select>
+-          </label>
+-          {field && (
+-            <div className="mt-3">
+-              <span className="text-xs font-medium text-slate-500 block mb-1">New value</span>
+-              {clear ? <p className="text-xs text-slate-400 py-2">The field will be emptied on every selected record.</p>
+-                : <FieldInput field={field} value={value} onChange={setValue} />}
+-              {!field.required && (
+-                <label className="text-xs inline-flex items-center gap-1.5 mt-2" style={{ color: 'var(--color-muted)' }}>
+-                  <input type="checkbox" checked={clear} onChange={(e) => setClear(e.target.checked)} /> Clear this field instead
+-                </label>
++    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true" aria-label={`Mass update ${count} ${plural(noun, count)}`}>
++      <div className="bg-white rounded-2xl w-full max-w-4xl shadow-2xl flex flex-col max-h-[90vh]">
++        <div className="px-5 pt-5 pb-3 border-b border-line flex items-start justify-between gap-3">
++          <div>
++            <h2 className="text-[15px] font-semibold text-ink">Mass update {count} {plural(noun, count)}</h2>
++            <p className="text-xs mt-0.5" style={{ color: 'var(--color-muted)' }}>Set any number of fields — fields left on “No change” are not touched. Each record is saved through its normal update, so validation and automations still apply.</p>
++          </div>
++          <button type="button" onClick={onClose} aria-label="Close" className="text-slate-400 hover:text-ink"><X className="w-4 h-4" /></button>
++        </div>
++        {result ? (
++          <div className="p-5"><Result result={result} noun={noun} onClose={onClose} /></div>
++        ) : (
++          <>
++            <div className="px-5 pt-3 flex items-center gap-3 flex-wrap">
++              <input className="input flex-1 min-w-[200px]" placeholder={`Search ${editable.length} fields…`} value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search fields" />
++              <label className="text-xs inline-flex items-center gap-1.5" style={{ color: 'var(--color-muted)' }}>
++                <input type="checkbox" checked={onlySet} onChange={(e) => setOnlySet(e.target.checked)} /> Only fields being changed
++              </label>
++            </div>
++            <div className="px-5 py-3 overflow-y-auto min-h-0 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-4 gap-y-3">
++              {shown.map((f) => {
++                const set = vals[f.api_name] !== NO_CHANGE;
++                return (
++                  <div key={f.api_name} className="min-w-0">
++                    <div className="flex items-center justify-between mb-1 gap-2">
++                      <span className="text-[11.5px] font-semibold truncate" style={{ color: set ? 'var(--color-brand)' : 'var(--color-muted)' }}>{f.label}{f.required ? ' *' : ''}</span>
++                      <span className="flex gap-2 shrink-0">
++                        {!f.required && vals[f.api_name] !== null && !['choice', 'user', 'team', 'bool'].includes(kindOf(f)) && (
++                          <button type="button" className="text-[11px]" style={{ color: 'var(--color-faint)' }} onClick={() => setVal(f.api_name, null)}>Clear value</button>
++                        )}
++                        {set && <button type="button" className="text-[11px] font-semibold" style={{ color: 'var(--color-brand)' }} onClick={() => setVal(f.api_name, NO_CHANGE)}>No change</button>}
++                      </span>
++                    </div>
++                    <MassValueInput field={f} value={vals[f.api_name]} onChange={(v) => setVal(f.api_name, v)} rows={rows} getValue={getValue} />
++                  </div>
++                );
++              })}
++              {shown.length === 0 && <p className="text-xs text-slate-400">No fields match.</p>}
++            </div>
++            <div className="px-5 py-3 border-t border-line">
++              {changes.length > 0 ? (
++                <div className="flex flex-wrap gap-1.5 mb-3 text-[12px]" aria-label="Changes to apply">
++                  {changes.map(({ field, value }) => (
++                    <span key={field.api_name} className="px-2 py-1 rounded-lg" style={{ background: 'var(--color-brand-soft)', color: 'var(--color-brand)' }}>
++                      {field.label} → <b>{describeValue(field, value)}</b>
++                    </span>
++                  ))}
++                </div>
++              ) : <p className="text-xs mb-3" style={{ color: 'var(--color-faint)' }}>Choose a value for at least one field.</p>}
++              {progress ? <Progress {...progress} /> : (
++                <div className="flex justify-end gap-2">
++                  <button type="button" onClick={onClose} className="btn btn-secondary">Cancel</button>
++                  <button type="button" onClick={run} disabled={!changes.length} className="btn btn-primary disabled:opacity-50">
++                    Update {changes.length} field{changes.length === 1 ? '' : 's'} on {count} {plural(noun, count)}
++                  </button>
++                </div>
+               )}
+             </div>
+-          )}
+-          <p className="text-xs mt-3" style={{ color: 'var(--color-muted)' }}>Each record is saved through its normal update, so validation and automations still apply.</p>
+-          {progress ? <Progress {...progress} /> : (
+-            <button type="button" onClick={run} className="btn btn-primary w-full mt-4">Update {count} {noun}{count === 1 ? '' : 's'}</button>
+-          )}
+-        </>
+-      )}
+-    </Modal>
++          </>
++        )}
++      </div>
++    </div>
+   );
+ }
+ 
+@@ -940,7 +1054,7 @@ export function BulkAssignModal({ userFields, count, noun, onRun, onClose }) {
+     setResult(await onRun(field, field.field_type === 'user_name' ? u.name : u.id, (done, total) => setProgress({ done, total })));
+   };
+   return (
+-    <Modal title={`Assign ${count} ${noun}${count === 1 ? '' : 's'}`} onClose={onClose}>
++    <Modal title={`Assign ${count} ${plural(noun, count)}`} onClose={onClose}>
+       {result ? <Result result={result} noun={noun} onClose={onClose} /> : (
+         <>
+           {userFields.length > 1 && (
+@@ -957,7 +1071,7 @@ export function BulkAssignModal({ userFields, count, noun, onRun, onClose }) {
+             </select>
+           </label>
+           {progress ? <Progress {...progress} /> : (
+-            <button type="button" onClick={run} disabled={!user} className="btn btn-primary w-full mt-4 disabled:opacity-50">Assign {count} {noun}{count === 1 ? '' : 's'}</button>
++            <button type="button" onClick={run} disabled={!user} className="btn btn-primary w-full mt-4 disabled:opacity-50">Assign {count} {plural(noun, count)}</button>
+           )}
+         </>
+       )}
+@@ -975,7 +1089,7 @@ export function BulkDeleteModal({ count, noun, onRun, onClose }) {
+     setResult(await onRun((done, total) => setProgress({ done, total })));
+   };
+   return (
+-    <Modal title={`Delete ${count} ${noun}${count === 1 ? '' : 's'}?`} onClose={onClose}>
++    <Modal title={`Delete ${count} ${plural(noun, count)}?`} onClose={onClose}>
+       {result ? (
+         <div className="text-sm">
+           <p style={{ color: 'var(--color-success-strong)' }}>{result.ok} deleted.</p>
+@@ -989,7 +1103,7 @@ export function BulkDeleteModal({ count, noun, onRun, onClose }) {
+         </div>
+       ) : (
+         <>
+-          <p className="text-sm" style={{ color: 'var(--color-muted)' }}>This permanently deletes the selected {noun}s. It cannot be undone.</p>
++          <p className="text-sm" style={{ color: 'var(--color-muted)' }}>This permanently deletes the selected {plural(noun, 2)}. It cannot be undone.</p>
+           {needsConfirm && (
+             <label className="text-xs font-medium text-slate-500 block mt-3">Type <b>DELETE</b> to confirm
+               <input className="input w-full mt-1" value={typed} onChange={(e) => setTyped(e.target.value)} />
+@@ -998,7 +1112,7 @@ export function BulkDeleteModal({ count, noun, onRun, onClose }) {
+           {progress ? <Progress {...progress} /> : (
+             <button type="button" onClick={run} disabled={needsConfirm && typed !== 'DELETE'}
+               className="w-full mt-4 text-sm font-semibold py-2 rounded-lg text-white disabled:opacity-50" style={{ background: 'var(--color-danger)' }}>
+-              Delete {count} {noun}{count === 1 ? '' : 's'}
++              Delete {count} {plural(noun, count)}
+             </button>
+           )}
+         </>
+diff --git a/frontend/src/pages/Leads.jsx b/frontend/src/pages/Leads.jsx
+index 5749e39..5c3d393 100644
+--- a/frontend/src/pages/Leads.jsx
++++ b/frontend/src/pages/Leads.jsx
+@@ -522,6 +522,12 @@ export default function Leads() {
+     load();
+     return result;
+   };
++  const runUpdateMany = async (changes, onProgress) => {
++    const body = Object.fromEntries(changes.map((c) => [c.field.api_name, c.value]));
++    const result = await runBulk(selectedIds, (id) => api.updateLead(id, body), onProgress);
++    load();
++    return result;
++  };
+   const runDelete = async (onProgress) => {
+     const result = await runBulk(selectedIds, (id) => api.deleteLead(id), onProgress, 2);
+     selection.clear();
+@@ -744,7 +750,7 @@ export default function Leads() {
+       )}
+ 
+       {bulk === 'update' && (
+-        <BulkUpdateModal fields={fields} count={selection.ids.size} noun="lead" onRun={runUpdate} onClose={() => setBulk(null)} />
++        <BulkUpdateModal fields={fields} count={selection.ids.size} noun="lead" rows={list} getValue={leadValue} onRun={runUpdateMany} onClose={() => setBulk(null)} />
+       )}
+       {bulk === 'assign' && (
+         <BulkAssignModal userFields={fields.filter((f) => f.field_type === 'user_name')} count={selection.ids.size} noun="lead"
+diff --git a/frontend/src/pages/universal/UniversalList.jsx b/frontend/src/pages/universal/UniversalList.jsx
+index ce19368..c0050cd 100644
+--- a/frontend/src/pages/universal/UniversalList.jsx
++++ b/frontend/src/pages/universal/UniversalList.jsx
+@@ -189,6 +189,20 @@ export default function UniversalList() {
+   // Every configured field, plus columns the records carry that are not
+   // configured fields (a pipeline's Stage, for one).
+   const filterFields = useMemo(() => [...fields, ...extraRecordFields(records, fields, module)], [fields, records, module]);
++  // Opportunities: Stage is set through the pipeline, so mass update offers it
++  // as its own field, listing the pipeline's stages.
++  const [stages, setStages] = useState([]);
++  useEffect(() => {
++    if (module?.api_name !== 'opportunities') { setStages([]); return; }
++    api.listPipelines('opportunities').then((ps) => {
++      const many = ps.filter((x) => x.active !== 0).length > 1;
++      setStages(ps.filter((x) => x.active !== 0).flatMap((pl) => (pl.stages || []).filter((st) => st.active !== 0)
++        .map((st) => ({ value: st.id, label: many ? `${pl.name} · ${st.name}` : st.name }))));
++    }).catch(() => setStages([]));
++  }, [module?.api_name]);
++  const massFields = useMemo(() => (stages.length
++    ? [{ api_name: 'stage_id', label: 'Stage', field_type: 'dropdown', value_type: 'number', pipeline_stage: true, is_system: 1, show_in_edit: 1, options_json: JSON.stringify(stages) }, ...fields]
++    : fields), [stages, fields]);
+ 
+   const filtered = useMemo(() => {
+     let rows = applyDrill(records, drill);
+@@ -270,6 +284,21 @@ export default function UniversalList() {
+     load();
+     return result;
+   };
++  // Mass update: all chosen fields in one save per record. A pipeline stage
++  // moves through the stage route (history, probability, automations); custom
++  // fields on a standard module go to their own store.
++  const runUpdateMany = async (changes, onProgress) => {
++    const stage = changes.find((c) => c.field.pipeline_stage);
++    const custom = changes.filter((c) => !c.field.pipeline_stage && module.table_name && !c.field.is_system);
++    const standard = changes.filter((c) => !c.field.pipeline_stage && !custom.includes(c));
++    const result = await runBulk(selectedIds, async (id) => {
++      if (stage && stage.value != null) await api.moveOpportunityStage(id, stage.value);
++      if (standard.length) await api.universalUpdate(module, id, Object.fromEntries(standard.map((c) => [c.field.api_name, c.value])));
++      if (custom.length) await api.saveCustomFieldValues(module.api_name, id, Object.fromEntries(custom.map((c) => [c.field.api_name, c.value])));
++    }, onProgress);
++    load();
++    return result;
++  };
+   const runDelete = async (onProgress) => {
+     const result = await runBulk(selectedIds, (id) => api.universalDelete(module, id), onProgress, 2);
+     selection.clear();
+@@ -663,8 +692,8 @@ export default function UniversalList() {
+       </div>
+ 
+       {bulk === 'update' && (
+-        <BulkUpdateModal fields={fields} count={selection.ids.size} noun={singularLabel.toLowerCase()}
+-          onRun={runUpdate} onClose={() => { setBulk(null); }} />
++        <BulkUpdateModal fields={massFields} count={selection.ids.size} noun={singularLabel.toLowerCase()}
++          rows={records} getValue={getFieldValue} onRun={runUpdateMany} onClose={() => { setBulk(null); }} />
+       )}
+       {bulk === 'assign' && (
+         <BulkAssignModal userFields={userFields} count={selection.ids.size} noun={singularLabel.toLowerCase()}
